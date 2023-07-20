@@ -23,6 +23,7 @@ type BidderInfos map[string]BidderInfo
 
 // BidderInfo specifies all configuration for a bidder except for enabled status, endpoint, and extra information.
 type BidderInfo struct {
+	AliasOf          string `yaml:"aliasOf" mapstructure:"aliasOf"`
 	Disabled         bool   `yaml:"disabled" mapstructure:"disabled"`
 	Endpoint         string `yaml:"endpoint" mapstructure:"endpoint"`
 	ExtraAdapterInfo string `yaml:"extra_info" mapstructure:"extra_info"`
@@ -133,7 +134,7 @@ type Syncer struct {
 // In most cases, bidders will specify a URL with a `{{.RedirectURL}}` macro for the call back to
 // Prebid Server and a UserMacro which the bidder server will replace with the user's id. Example:
 //
-//	url: "https://sync.bidderserver.com/usersync?gdpr={{.GDPR}}&gdpr_consent={{.GDPRConsent}}&us_privacy={{.USPrivacy}}&redirect={{.RedirectURL}}"
+//	url: "https://sync.bidderserver.com/usersync?gdpr={{.GDPR}}&gdpr_consent={{.GDPRConsent}}&us_privacy={{.USPrivacy}}&gpp={{.GPP}}&gpp_sid={{.GPPSID}}&redirect={{.RedirectURL}}"
 //	userMacro: "$UID"
 //
 // Prebid Server is configured with a default RedirectURL template matching the /setuid call. This
@@ -152,6 +153,8 @@ type SyncerEndpoint struct {
 	//  {{.GDPR}}        - This will be replaced with the "gdpr" property sent to /cookie_sync.
 	//  {{.Consent}}     - This will be replaced with the "consent" property sent to /cookie_sync.
 	//  {{.USPrivacy}}   - This will be replaced with the "us_privacy" property sent to /cookie_sync.
+	//  {{.GPP}}		 - This will be replaced with the "gpp" property sent to /cookie_sync.
+	//  {{.GPPSID}}		 - This will be replaced with the "gpp_sid" property sent to /cookie_sync.
 	URL string `yaml:"url" mapstructure:"url"`
 
 	// RedirectURL is an endpoint on the host server the user will be redirected to when a user sync
@@ -165,7 +168,7 @@ type SyncerEndpoint struct {
 	//  {{.UserMacro}}   - This will be replaced with the bidder server's user id macro.
 	//
 	// The endpoint on the host server is usually Prebid Server's /setuid endpoint. The default value is:
-	// `{{.ExternalURL}}/setuid?bidder={{.SyncerKey}}&gdpr={{.GDPR}}&gdpr_consent={{.GDPRConsent}}&f={{.SyncType}}&uid={{.UserMacro}}`
+	// `{{.ExternalURL}}/setuid?bidder={{.SyncerKey}}&gdpr={{.GDPR}}&gdpr_consent={{.GDPRConsent}}&gpp={{.GPP}}&gpp_sid={{.GPPSID}}&f={{.SyncType}}&uid={{.UserMacro}}`
 	RedirectURL string `yaml:"redirectUrl" mapstructure:"redirect_url"`
 
 	// ExternalURL is available as a macro to the RedirectURL template. If not specified, either the syncer configuration
@@ -264,18 +267,33 @@ func (infos BidderInfos) validate(errs []error) []error {
 		if bidder.IsEnabled() {
 			errs = validateAdapterEndpoint(bidder.Endpoint, bidderName, errs)
 
-			validateInfoErr := validateInfo(bidder, bidderName)
-			if validateInfoErr != nil {
-				errs = append(errs, validateInfoErr)
+			if err := validateInfo(bidder, bidderName); err != nil {
+				errs = append(errs, err)
 			}
 
-			validateSyncerErr := validateSyncer(bidder)
-			if validateSyncerErr != nil {
-				errs = append(errs, validateSyncerErr)
+			if err := validateSyncer(bidder); err != nil {
+				errs = append(errs, err)
+			}
+
+			if err := validateAliases(bidder, infos, bidderName); err != nil {
+				errs = append(errs, err)
 			}
 		}
 	}
 	return errs
+}
+
+func validateAliases(bidder BidderInfo, infos BidderInfos, bidderName string) error {
+	if len(bidder.AliasOf) > 0 {
+		if parentBidder, ok := infos[bidder.AliasOf]; ok {
+			if len(parentBidder.AliasOf) > 0 {
+				return fmt.Errorf("bidder: %s cannot be an alias of an alias: %s", bidder.AliasOf, bidderName)
+			}
+		} else {
+			return fmt.Errorf("bidder: %s not found for an alias: %s", bidder.AliasOf, bidderName)
+		}
+	}
+	return nil
 }
 
 var testEndpointTemplateParams = macros.EndpointTemplateParams{
@@ -285,6 +303,7 @@ var testEndpointTemplateParams = macros.EndpointTemplateParams{
 	ZoneID:      "anyZoneID",
 	SourceId:    "anySourceID",
 	AdUnit:      "anyAdUnit",
+	MediaType:   "MediaType",
 }
 
 // validateAdapterEndpoint makes sure that an adapter has a valid endpoint

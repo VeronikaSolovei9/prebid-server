@@ -17,8 +17,10 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/golang/glog"
 	"github.com/julienschmidt/httprouter"
-	"github.com/prebid/openrtb/v17/openrtb2"
+	"github.com/prebid/openrtb/v19/openrtb2"
+	"github.com/prebid/prebid-server/hooks"
 	"github.com/prebid/prebid-server/hooks/hookexecution"
+	"github.com/prebid/prebid-server/ortb"
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 
 	accountService "github.com/prebid/prebid-server/account"
@@ -33,6 +35,7 @@ import (
 	"github.com/prebid/prebid-server/stored_requests/backends/empty_fetcher"
 	"github.com/prebid/prebid-server/usersync"
 	"github.com/prebid/prebid-server/util/iputil"
+	"github.com/prebid/prebid-server/util/ptrutil"
 	"github.com/prebid/prebid-server/util/uuidutil"
 	"github.com/prebid/prebid-server/version"
 )
@@ -59,7 +62,7 @@ func NewVideoEndpoint(
 		return nil, errors.New("NewVideoEndpoint requires non-nil arguments.")
 	}
 
-	defRequest := defReqJSON != nil && len(defReqJSON) > 0
+	defRequest := len(defReqJSON) > 0
 
 	ipValidator := iputil.PublicNetworkIPValidator{
 		IPv4PrivateNetworks: cfg.RequestValidation.IPv4PrivateNetworksParsed,
@@ -86,7 +89,7 @@ func NewVideoEndpoint(
 		videoEndpointRegexp,
 		ipValidator,
 		empty_fetcher.EmptyFetcher{},
-		&hookexecution.EmptyHookExecutor{}}).VideoAuctionEndpoint), nil
+		hooks.EmptyPlanBuilder{}}).VideoAuctionEndpoint), nil
 }
 
 /*
@@ -253,6 +256,11 @@ func (deps *endpointDeps) VideoAuctionEndpoint(w http.ResponseWriter, r *http.Re
 	// Populate any "missing" OpenRTB fields with info from other sources, (e.g. HTTP request headers).
 	deps.setFieldsImplicitly(r, bidReqWrapper)
 
+	if err := ortb.SetDefaults(bidReqWrapper); err != nil {
+		handleError(&labels, w, errL, &vo, &debugLog)
+		return
+	}
+
 	errL = deps.validateRequest(bidReqWrapper, false, false, nil, false)
 	if errortypes.ContainsFatalError(errL) {
 		handleError(&labels, w, errL, &vo, &debugLog)
@@ -267,7 +275,11 @@ func (deps *endpointDeps) VideoAuctionEndpoint(w http.ResponseWriter, r *http.Re
 		defer cancel()
 	}
 
-	usersyncs := usersync.ParseCookieFromRequest(r, &(deps.cfg.HostCookie))
+	// Read Usersyncs/Cookie
+	decoder := usersync.Base64Decoder{}
+	usersyncs := usersync.ReadCookie(r, decoder, &deps.cfg.HostCookie)
+	usersync.SyncHostCookie(r, usersyncs, &deps.cfg.HostCookie)
+
 	if bidReqWrapper.App != nil {
 		labels.Source = metrics.DemandApp
 		labels.PubID = getAccountID(bidReqWrapper.App.Publisher)
@@ -282,15 +294,14 @@ func (deps *endpointDeps) VideoAuctionEndpoint(w http.ResponseWriter, r *http.Re
 	}
 
 	// Look up account now that we have resolved the pubID value
-	account, acctIDErrs := accountService.GetAccount(ctx, deps.cfg, deps.accounts, labels.PubID)
+	account, acctIDErrs := accountService.GetAccount(ctx, deps.cfg, deps.accounts, labels.PubID, deps.metricsEngine)
 	if len(acctIDErrs) > 0 {
 		handleError(&labels, w, acctIDErrs, &vo, &debugLog)
 		return
 	}
 
 	secGPC := r.Header.Get("Sec-GPC")
-
-	auctionRequest := exchange.AuctionRequest{
+	auctionRequest := &exchange.AuctionRequest{
 		BidRequestWrapper:          bidReqWrapper,
 		Account:                    *account,
 		UserSyncs:                  usersyncs,
@@ -299,12 +310,17 @@ func (deps *endpointDeps) VideoAuctionEndpoint(w http.ResponseWriter, r *http.Re
 		LegacyLabels:               labels,
 		GlobalPrivacyControlHeader: secGPC,
 		PubID:                      labels.PubID,
-		HookExecutor:               deps.hookExecutor,
+		HookExecutor:               hookexecution.EmptyHookExecutor{},
 	}
 
-	response, err := deps.ex.HoldAuction(ctx, auctionRequest, &debugLog)
-	vo.Request = bidReqWrapper.BidRequest
+	auctionResponse, err := deps.ex.HoldAuction(ctx, auctionRequest, &debugLog)
+	vo.RequestWrapper = bidReqWrapper
+	var response *openrtb2.BidResponse
+	if auctionResponse != nil {
+		response = auctionResponse.BidResponse
+	}
 	vo.Response = response
+	vo.SeatNonBid = auctionResponse.GetSeatNonBid()
 	if err != nil {
 		errL := []error{err}
 		handleError(&labels, w, errL, &vo, &debugLog)
@@ -319,6 +335,10 @@ func (deps *endpointDeps) VideoAuctionEndpoint(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if bidReq.Test == 1 {
+		err = setSeatNonBidRaw(bidReqWrapper, auctionResponse)
+		if err != nil {
+			glog.Errorf("Error setting seat non-bid: %v", err)
+		}
 		bidResp.Ext = response.Ext
 	}
 
@@ -586,7 +606,6 @@ func getVideoStoredRequestId(request []byte) (string, error) {
 }
 
 func mergeData(videoRequest *openrtb_ext.BidRequestVideo, bidRequest *openrtb2.BidRequest) error {
-
 	if videoRequest.Site != nil {
 		bidRequest.Site = videoRequest.Site
 		if &videoRequest.Content != nil {
@@ -639,7 +658,6 @@ func mergeData(videoRequest *openrtb_ext.BidRequestVideo, bidRequest *openrtb2.B
 }
 
 func createBidExtension(videoRequest *openrtb_ext.BidRequestVideo) ([]byte, error) {
-
 	var inclBrandCat *openrtb_ext.ExtIncludeBrandCategory
 	if videoRequest.IncludeBrandCategory != nil {
 		inclBrandCat = &openrtb_ext.ExtIncludeBrandCategory{
@@ -659,16 +677,11 @@ func createBidExtension(videoRequest *openrtb_ext.BidRequestVideo) ([]byte, erro
 		durationRangeSec = videoRequest.PodConfig.DurationRangeSec
 	}
 
-	priceGranularity := openrtb_ext.PriceGranularityFromString("med")
-	if videoRequest.PriceGranularity.Precision != 0 {
-		priceGranularity = videoRequest.PriceGranularity
-	}
-
 	targeting := openrtb_ext.ExtRequestTargeting{
-		PriceGranularity:     priceGranularity,
+		PriceGranularity:     videoRequest.PriceGranularity,
 		IncludeBrandCategory: inclBrandCat,
 		DurationRangeSec:     durationRangeSec,
-		IncludeBidderKeys:    true,
+		IncludeBidderKeys:    ptrutil.ToPtr(true),
 		AppendBidderNames:    videoRequest.AppendBidderNames,
 	}
 
@@ -684,11 +697,7 @@ func createBidExtension(videoRequest *openrtb_ext.BidRequestVideo) ([]byte, erro
 	}
 	extReq := openrtb_ext.ExtRequest{Prebid: prebid}
 
-	reqJSON, err := json.Marshal(extReq)
-	if err != nil {
-		return nil, err
-	}
-	return reqJSON, nil
+	return json.Marshal(extReq)
 }
 
 func (deps *endpointDeps) parseVideoRequest(request []byte, headers http.Header) (req *openrtb_ext.BidRequestVideo, errs []error, podErrors []PodError) {

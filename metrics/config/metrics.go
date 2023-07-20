@@ -149,6 +149,12 @@ func (me *MultiMetricsEngine) RecordTLSHandshakeTime(tlsHandshakeTime time.Durat
 	}
 }
 
+func (me *MultiMetricsEngine) RecordBidderServerResponseTime(bidderServerResponseTime time.Duration) {
+	for _, thisME := range *me {
+		thisME.RecordBidderServerResponseTime(bidderServerResponseTime)
+	}
+}
+
 // RecordAdapterBidReceived across all engines
 func (me *MultiMetricsEngine) RecordAdapterBidReceived(labels metrics.AdapterLabels, bidType openrtb_ext.BidType, hasAdm bool) {
 	for _, thisME := range *me {
@@ -167,6 +173,13 @@ func (me *MultiMetricsEngine) RecordAdapterPrice(labels metrics.AdapterLabels, c
 func (me *MultiMetricsEngine) RecordAdapterTime(labels metrics.AdapterLabels, length time.Duration) {
 	for _, thisME := range *me {
 		thisME.RecordAdapterTime(labels, length)
+	}
+}
+
+// RecordOverheadTime across all engines
+func (me *MultiMetricsEngine) RecordOverheadTime(overhead metrics.OverheadType, length time.Duration) {
+	for _, thisME := range *me {
+		thisME.RecordOverheadTime(overhead, length)
 	}
 }
 
@@ -303,6 +316,27 @@ func (me *MultiMetricsEngine) RecordBidValidationSecureMarkupWarn(adapter openrt
 	}
 }
 
+func (me *MultiMetricsEngine) RecordAccountGDPRPurposeWarning(account string, purposeName string) {
+	for _, thisME := range *me {
+		thisME.RecordAccountGDPRPurposeWarning(account, purposeName)
+	}
+}
+func (me *MultiMetricsEngine) RecordAccountGDPRChannelEnabledWarning(account string) {
+	for _, thisME := range *me {
+		thisME.RecordAccountGDPRChannelEnabledWarning(account)
+	}
+}
+func (me *MultiMetricsEngine) RecordAccountCCPAChannelEnabledWarning(account string) {
+	for _, thisME := range *me {
+		thisME.RecordAccountCCPAChannelEnabledWarning(account)
+	}
+}
+func (me *MultiMetricsEngine) RecordAccountUpgradeStatus(account string) {
+	for _, thisME := range *me {
+		thisME.RecordAccountUpgradeStatus(account)
+	}
+}
+
 func (me *MultiMetricsEngine) RecordModuleCalled(labels metrics.ModuleLabels, duration time.Duration) {
 	for _, thisME := range *me {
 		thisME.RecordModuleCalled(labels, duration)
@@ -397,6 +431,10 @@ func (me *NilMetricsEngine) RecordDNSTime(dnsLookupTime time.Duration) {
 func (me *NilMetricsEngine) RecordTLSHandshakeTime(tlsHandshakeTime time.Duration) {
 }
 
+// RecordBidderServerResponseTime as a noop
+func (me *NilMetricsEngine) RecordBidderServerResponseTime(bidderServerResponseTime time.Duration) {
+}
+
 // RecordAdapterBidReceived as a noop
 func (me *NilMetricsEngine) RecordAdapterBidReceived(labels metrics.AdapterLabels, bidType openrtb_ext.BidType, hasAdm bool) {
 }
@@ -407,6 +445,10 @@ func (me *NilMetricsEngine) RecordAdapterPrice(labels metrics.AdapterLabels, cpm
 
 // RecordAdapterTime as a noop
 func (me *NilMetricsEngine) RecordAdapterTime(labels metrics.AdapterLabels, length time.Duration) {
+}
+
+// RecordOverheadTime as a noop
+func (me *NilMetricsEngine) RecordOverheadTime(overhead metrics.OverheadType, length time.Duration) {
 }
 
 // RecordCookieSync as a noop
@@ -482,6 +524,18 @@ func (me *NilMetricsEngine) RecordBidValidationSecureMarkupError(adapter openrtb
 }
 
 func (me *NilMetricsEngine) RecordBidValidationSecureMarkupWarn(adapter openrtb_ext.BidderName, account string) {
+}
+
+func (me *NilMetricsEngine) RecordAccountGDPRPurposeWarning(account string, purposeName string) {
+}
+
+func (me *NilMetricsEngine) RecordAccountGDPRChannelEnabledWarning(account string) {
+}
+
+func (me *NilMetricsEngine) RecordAccountCCPAChannelEnabledWarning(account string) {
+}
+
+func (me *NilMetricsEngine) RecordAccountUpgradeStatus(account string) {
 }
 
 func (me *NilMetricsEngine) RecordModuleCalled(labels metrics.ModuleLabels, duration time.Duration) {
