@@ -152,7 +152,7 @@ func (cfg *Configuration) validate(v *viper.Viper) []error {
 
 	if cfg.TmaxAdjustments.Enabled {
 		glog.Warning(`cfg.TmaxAdjustments.Enabled will currently not do anything as tmax adjustment feature is still under development.`)
-		cfg.TmaxAdjustments.Enabled = false
+		//cfg.TmaxAdjustments.Enabled = false
 	}
 
 	if cfg.AccountDefaults.Privacy != nil {
