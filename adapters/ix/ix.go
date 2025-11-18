@@ -7,15 +7,17 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/prebid/prebid-server/adapters"
-	"github.com/prebid/prebid-server/config"
-	"github.com/prebid/prebid-server/errortypes"
-	"github.com/prebid/prebid-server/openrtb_ext"
-	"github.com/prebid/prebid-server/version"
+	"github.com/prebid/prebid-server/v3/adapters"
+	"github.com/prebid/prebid-server/v3/config"
+	"github.com/prebid/prebid-server/v3/errortypes"
+	"github.com/prebid/prebid-server/v3/openrtb_ext"
+	"github.com/prebid/prebid-server/v3/util/jsonutil"
+	"github.com/prebid/prebid-server/v3/util/ptrutil"
+	"github.com/prebid/prebid-server/v3/version"
 
-	"github.com/prebid/openrtb/v19/native1"
-	native1response "github.com/prebid/openrtb/v19/native1/response"
-	"github.com/prebid/openrtb/v19/openrtb2"
+	"github.com/prebid/openrtb/v20/native1"
+	native1response "github.com/prebid/openrtb/v20/native1/response"
+	"github.com/prebid/openrtb/v20/openrtb2"
 )
 
 type IxAdapter struct {
@@ -23,15 +25,18 @@ type IxAdapter struct {
 }
 
 type ExtRequest struct {
-	Prebid *openrtb_ext.ExtRequestPrebid `json:"prebid"`
+	Prebid *openrtb_ext.ExtRequestPrebid `json:"prebid,omitempty"`
 	SChain *openrtb2.SupplyChain         `json:"schain,omitempty"`
-	IxDiag *IxDiag                       `json:"ixdiag,omitempty"`
+	IxDiag json.RawMessage               `json:"ixdiag,omitempty"`
 }
 
-type IxDiag struct {
-	PbsV            string `json:"pbsv,omitempty"`
-	PbjsV           string `json:"pbjsv,omitempty"`
-	MultipleSiteIds string `json:"multipleSiteIds,omitempty"`
+type auctionConfig struct {
+	BidId  string          `json:"bidId,omitempty"`
+	Config json.RawMessage `json:"config,omitempty"`
+}
+
+type ixRespExt struct {
+	AuctionConfig []auctionConfig `json:"protectedAudienceAuctionConfigs,omitempty"`
 }
 
 func (a *IxAdapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adapters.ExtraRequestInfo) ([]*adapters.RequestData, []error) {
@@ -46,7 +51,7 @@ func (a *IxAdapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adapters
 	filteredImps := make([]openrtb2.Imp, 0, len(request.Imp))
 	requestCopy := *request
 
-	ixDiag := &IxDiag{}
+	ixDiagFields := make(map[string]interface{})
 
 	for _, imp := range requestCopy.Imp {
 		var err error
@@ -74,8 +79,8 @@ func (a *IxAdapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adapters
 			}
 
 			if len(bannerCopy.Format) == 1 {
-				bannerCopy.W = openrtb2.Int64Ptr(bannerCopy.Format[0].W)
-				bannerCopy.H = openrtb2.Int64Ptr(bannerCopy.Format[0].H)
+				bannerCopy.W = ptrutil.ToPtr(bannerCopy.Format[0].W)
+				bannerCopy.H = ptrutil.ToPtr(bannerCopy.Format[0].H)
 			}
 			imp.Banner = &bannerCopy
 		}
@@ -83,9 +88,9 @@ func (a *IxAdapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adapters
 	}
 	requestCopy.Imp = filteredImps
 
-	setSitePublisherId(&requestCopy, uniqueSiteIDs, ixDiag)
+	setPublisherId(&requestCopy, uniqueSiteIDs, ixDiagFields)
 
-	err := setIxDiagIntoExtRequest(&requestCopy, ixDiag)
+	err := setIxDiagIntoExtRequest(&requestCopy, ixDiagFields, version.Ver)
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -101,7 +106,11 @@ func (a *IxAdapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adapters
 	return requests, errs
 }
 
-func setSitePublisherId(requestCopy *openrtb2.BidRequest, uniqueSiteIDs map[string]struct{}, ixDiag *IxDiag) {
+func setPublisherId(requestCopy *openrtb2.BidRequest, uniqueSiteIDs map[string]struct{}, ixDiagFields map[string]interface{}) {
+	siteIDs := make([]string, 0, len(uniqueSiteIDs))
+	for key := range uniqueSiteIDs {
+		siteIDs = append(siteIDs, key)
+	}
 	if requestCopy.Site != nil {
 		site := *requestCopy.Site
 		if site.Publisher == nil {
@@ -110,32 +119,43 @@ func setSitePublisherId(requestCopy *openrtb2.BidRequest, uniqueSiteIDs map[stri
 			publisher := *site.Publisher
 			site.Publisher = &publisher
 		}
-
-		siteIDs := make([]string, 0, len(uniqueSiteIDs))
-		for key := range uniqueSiteIDs {
-			siteIDs = append(siteIDs, key)
-		}
 		if len(siteIDs) == 1 {
 			site.Publisher.ID = siteIDs[0]
 		}
-		if len(siteIDs) > 1 {
-			// Sorting siteIDs for predictable output as Go maps don't guarantee order
-			sort.Strings(siteIDs)
-			multipleSiteIDs := strings.Join(siteIDs, ", ")
-			ixDiag.MultipleSiteIds = multipleSiteIDs
-		}
 		requestCopy.Site = &site
+	}
+
+	if requestCopy.App != nil {
+		app := *requestCopy.App
+
+		if app.Publisher == nil {
+			app.Publisher = &openrtb2.Publisher{}
+		} else {
+			publisher := *app.Publisher
+			app.Publisher = &publisher
+		}
+		if len(siteIDs) == 1 {
+			app.Publisher.ID = siteIDs[0]
+		}
+		requestCopy.App = &app
+	}
+
+	if len(siteIDs) > 1 {
+		// Sorting siteIDs for predictable output as Go maps don't guarantee order
+		sort.Strings(siteIDs)
+		multipleSiteIDs := strings.Join(siteIDs, ", ")
+		ixDiagFields["multipleSiteIds"] = multipleSiteIDs
 	}
 }
 
 func unmarshalToIxExt(imp *openrtb2.Imp) (*openrtb_ext.ExtImpIx, error) {
 	var bidderExt adapters.ExtImpBidder
-	if err := json.Unmarshal(imp.Ext, &bidderExt); err != nil {
+	if err := jsonutil.Unmarshal(imp.Ext, &bidderExt); err != nil {
 		return nil, err
 	}
 
 	var ixExt openrtb_ext.ExtImpIx
-	if err := json.Unmarshal(bidderExt.Bidder, &ixExt); err != nil {
+	if err := jsonutil.Unmarshal(bidderExt.Bidder, &ixExt); err != nil {
 		return nil, err
 	}
 
@@ -159,6 +179,7 @@ func createRequestData(a *IxAdapter, request *openrtb2.BidRequest, headers *http
 		Uri:     a.URI,
 		Body:    body,
 		Headers: *headers,
+		ImpIDs:  openrtb_ext.GetImpIDs(request.Imp),
 	}, err
 }
 
@@ -177,7 +198,7 @@ func (a *IxAdapter) MakeBids(internalRequest *openrtb2.BidRequest, externalReque
 	}
 
 	var bidResponse openrtb2.BidResponse
-	if err := json.Unmarshal(response.Body, &bidResponse); err != nil {
+	if err := jsonutil.Unmarshal(response.Body, &bidResponse); err != nil {
 		return nil, []error{&errortypes.BadServerResponse{
 			Message: fmt.Sprintf("JSON parsing error: %v", err),
 		}}
@@ -217,7 +238,7 @@ func (a *IxAdapter) MakeBids(internalRequest *openrtb2.BidRequest, externalReque
 			var bidExtVideo *openrtb_ext.ExtBidPrebidVideo
 			var bidExt openrtb_ext.ExtBid
 			if bidType == openrtb_ext.BidTypeVideo {
-				unmarshalExtErr := json.Unmarshal(bid.Ext, &bidExt)
+				unmarshalExtErr := jsonutil.Unmarshal(bid.Ext, &bidExt)
 				if unmarshalExtErr == nil && bidExt.Prebid != nil && bidExt.Prebid.Video != nil {
 					bidExtVideo = &openrtb_ext.ExtBidPrebidVideo{
 						Duration: bidExt.Prebid.Video.Duration,
@@ -230,7 +251,7 @@ func (a *IxAdapter) MakeBids(internalRequest *openrtb2.BidRequest, externalReque
 
 			var bidNative1v1 *Native11Wrapper
 			if bidType == openrtb_ext.BidTypeNative {
-				err := json.Unmarshal([]byte(bid.AdM), &bidNative1v1)
+				err := jsonutil.Unmarshal([]byte(bid.AdM), &bidNative1v1)
 				if err == nil && len(bidNative1v1.Native.EventTrackers) > 0 {
 					mergeNativeImpTrackers(&bidNative1v1.Native)
 					if json, err := marshalJsonWithoutUnicode(bidNative1v1); err == nil {
@@ -241,7 +262,7 @@ func (a *IxAdapter) MakeBids(internalRequest *openrtb2.BidRequest, externalReque
 
 			var bidNative1v2 *native1response.Response
 			if bidType == openrtb_ext.BidTypeNative {
-				err := json.Unmarshal([]byte(bid.AdM), &bidNative1v2)
+				err := jsonutil.Unmarshal([]byte(bid.AdM), &bidNative1v2)
 				if err == nil && len(bidNative1v2.EventTrackers) > 0 {
 					mergeNativeImpTrackers(bidNative1v2)
 					if json, err := marshalJsonWithoutUnicode(bidNative1v2); err == nil {
@@ -255,6 +276,26 @@ func (a *IxAdapter) MakeBids(internalRequest *openrtb2.BidRequest, externalReque
 				BidType:  bidType,
 				BidVideo: bidExtVideo,
 			})
+		}
+	}
+
+	if bidResponse.Ext != nil {
+		var bidRespExt ixRespExt
+		if err := jsonutil.Unmarshal(bidResponse.Ext, &bidRespExt); err != nil {
+			return nil, append(errs, err)
+		}
+
+		if bidRespExt.AuctionConfig != nil {
+			bidderResponse.FledgeAuctionConfigs = make([]*openrtb_ext.FledgeAuctionConfig, 0, len(bidRespExt.AuctionConfig))
+			for _, config := range bidRespExt.AuctionConfig {
+				if config.Config != nil {
+					fledgeAuctionConfig := &openrtb_ext.FledgeAuctionConfig{
+						ImpId:  config.BidId,
+						Config: config.Config,
+					}
+					bidderResponse.FledgeAuctionConfigs = append(bidderResponse.FledgeAuctionConfigs, fledgeAuctionConfig)
+				}
+			}
 		}
 	}
 
@@ -275,7 +316,7 @@ func getMediaTypeForBid(bid openrtb2.Bid, impMediaTypeReq map[string]openrtb_ext
 
 	if bid.Ext != nil {
 		var bidExt openrtb_ext.ExtBid
-		err := json.Unmarshal(bid.Ext, &bidExt)
+		err := jsonutil.Unmarshal(bid.Ext, &bidExt)
 		if err == nil && bidExt.Prebid != nil {
 			prebidType := string(bidExt.Prebid.Type)
 			if prebidType != "" {
@@ -346,39 +387,61 @@ func marshalJsonWithoutUnicode(v interface{}) (string, error) {
 	return strings.TrimSuffix(sb.String(), "\n"), nil
 }
 
-func setIxDiagIntoExtRequest(request *openrtb2.BidRequest, ixDiag *IxDiag) error {
-	extRequest := &ExtRequest{}
+// extractVersionWithoutCommitHash takes a version string like '0.23.1-g4ee257d8' and returns
+// the prefix without the commit hash: '0.23.1' -
+// the substring preceding the first hyphen.
+func extractVersionWithoutCommitHash(ver string) string {
+	if strings.Contains(ver, "-") {
+		return ver[:strings.Index(ver, "-")]
+	}
+	return ver // if no hyphen, return the original string
+}
+
+func setIxDiagIntoExtRequest(request *openrtb2.BidRequest, ixDiagAdditionalFields map[string]interface{}, ver string) error {
+	var extRequest ExtRequest
 	if request.Ext != nil {
-		if err := json.Unmarshal(request.Ext, &extRequest); err != nil {
+		if err := jsonutil.Unmarshal(request.Ext, &extRequest); err != nil {
 			return err
 		}
 	}
 
 	if extRequest.Prebid != nil && extRequest.Prebid.Channel != nil {
-		ixDiag.PbjsV = extRequest.Prebid.Channel.Version
+		ixDiagAdditionalFields["pbjsv"] = extRequest.Prebid.Channel.Version
 	}
 	// Slice commit hash out of version
-	if strings.Contains(version.Ver, "-") {
-		ixDiag.PbsV = version.Ver[:strings.Index(version.Ver, "-")]
-	} else if version.Ver != "" {
-		ixDiag.PbsV = version.Ver
+	prebidServerVersion := "unknown" // Default value when the version cannot be determined
+	if ver != "" {
+		prebidServerVersion = extractVersionWithoutCommitHash(ver)
 	}
+	ixDiagAdditionalFields["pbsv"] = prebidServerVersion
+	ixDiagAdditionalFields["pbsp"] = "go" // indicate prebid server implementation use Go version
 
-	// Only set request.ext if ixDiag is not empty
-	if *ixDiag != (IxDiag{}) {
-		extRequest := &ExtRequest{}
-		if request.Ext != nil {
-			if err := json.Unmarshal(request.Ext, &extRequest); err != nil {
-				return err
-			}
-		}
-		extRequest.IxDiag = ixDiag
-		extRequestJson, err := json.Marshal(extRequest)
-		if err != nil {
+	var ixDiagMap map[string]interface{}
+	if extRequest.IxDiag != nil && len(extRequest.IxDiag) > 0 {
+		if err := jsonutil.Unmarshal(extRequest.IxDiag, &ixDiagMap); err != nil {
 			return err
 		}
-		request.Ext = extRequestJson
+	} else {
+		ixDiagMap = make(map[string]interface{})
 	}
+
+	for k, v := range ixDiagAdditionalFields {
+		ixDiagMap[k] = v
+	}
+
+	ixDiagJSON, err := json.Marshal(ixDiagMap)
+	if err != nil {
+		return err
+	}
+
+	extRequest.IxDiag = ixDiagJSON
+
+	extRequestJSON, err := json.Marshal(extRequest)
+	if err != nil {
+		return err
+	}
+
+	request.Ext = extRequestJSON
 	return nil
 }
 
@@ -390,7 +453,7 @@ func moveSid(imp *openrtb2.Imp, ixExt *openrtb_ext.ExtImpIx) error {
 
 	if ixExt.Sid != "" {
 		var m map[string]interface{}
-		if err := json.Unmarshal(imp.Ext, &m); err != nil {
+		if err := jsonutil.Unmarshal(imp.Ext, &m); err != nil {
 			return err
 		}
 		m["sid"] = ixExt.Sid

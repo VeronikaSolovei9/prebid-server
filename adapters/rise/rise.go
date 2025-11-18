@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/prebid/openrtb/v19/openrtb2"
-	"github.com/prebid/prebid-server/adapters"
-	"github.com/prebid/prebid-server/config"
-	"github.com/prebid/prebid-server/openrtb_ext"
+	"github.com/prebid/openrtb/v20/openrtb2"
+
+	"github.com/prebid/prebid-server/v3/adapters"
+	"github.com/prebid/prebid-server/v3/config"
+	"github.com/prebid/prebid-server/v3/openrtb_ext"
+	"github.com/prebid/prebid-server/v3/util/jsonutil"
 )
 
 // adapter is a Rise implementation of the adapters.Bidder interface.
@@ -26,9 +28,9 @@ func Builder(_ openrtb_ext.BidderName, config config.Adapter, _ config.Server) (
 
 // MakeRequests prepares the HTTP requests which should be made to fetch bids.
 func (a *adapter) MakeRequests(openRTBRequest *openrtb2.BidRequest, _ *adapters.ExtraRequestInfo) (requestsToBidder []*adapters.RequestData, errs []error) {
-	publisherID, err := extractPublisherID(openRTBRequest)
+	org, err := extractOrg(openRTBRequest)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("extractPublisherID: %w", err))
+		errs = append(errs, fmt.Errorf("extractOrg: %w", err))
 		return nil, errs
 	}
 
@@ -43,9 +45,10 @@ func (a *adapter) MakeRequests(openRTBRequest *openrtb2.BidRequest, _ *adapters.
 
 	return append(requestsToBidder, &adapters.RequestData{
 		Method:  http.MethodPost,
-		Uri:     a.endpointURL + "?publisher_id=" + publisherID,
+		Uri:     a.endpointURL + "?publisher_id=" + org,
 		Body:    openRTBRequestJSON,
 		Headers: headers,
+		ImpIDs:  openrtb_ext.GetImpIDs(openRTBRequest.Imp),
 	}), nil
 }
 
@@ -60,7 +63,7 @@ func (a *adapter) MakeBids(request *openrtb2.BidRequest, _ *adapters.RequestData
 	}
 
 	var response openrtb2.BidResponse
-	if err := json.Unmarshal(responseData.Body, &response); err != nil {
+	if err := jsonutil.Unmarshal(responseData.Body, &response); err != nil {
 		return nil, []error{err}
 	}
 
@@ -87,25 +90,28 @@ func (a *adapter) MakeBids(request *openrtb2.BidRequest, _ *adapters.RequestData
 	return bidResponse, errs
 }
 
-func extractPublisherID(openRTBRequest *openrtb2.BidRequest) (string, error) {
+func extractOrg(openRTBRequest *openrtb2.BidRequest) (string, error) {
 	var err error
 	for _, imp := range openRTBRequest.Imp {
 		var bidderExt adapters.ExtImpBidder
-		if err = json.Unmarshal(imp.Ext, &bidderExt); err != nil {
+		if err = jsonutil.Unmarshal(imp.Ext, &bidderExt); err != nil {
 			return "", fmt.Errorf("unmarshal bidderExt: %w", err)
 		}
 
 		var impExt openrtb_ext.ImpExtRise
-		if err = json.Unmarshal(bidderExt.Bidder, &impExt); err != nil {
+		if err = jsonutil.Unmarshal(bidderExt.Bidder, &impExt); err != nil {
 			return "", fmt.Errorf("unmarshal ImpExtRise: %w", err)
 		}
 
+		if impExt.Org != "" {
+			return strings.TrimSpace(impExt.Org), nil
+		}
 		if impExt.PublisherID != "" {
 			return strings.TrimSpace(impExt.PublisherID), nil
 		}
 	}
 
-	return "", errors.New("no publisherID supplied")
+	return "", errors.New("no org or publisher_id supplied")
 }
 
 func getMediaTypeForBid(bid openrtb2.Bid) (openrtb_ext.BidType, error) {
@@ -114,6 +120,8 @@ func getMediaTypeForBid(bid openrtb2.Bid) (openrtb_ext.BidType, error) {
 		return openrtb_ext.BidTypeBanner, nil
 	case openrtb2.MarkupVideo:
 		return openrtb_ext.BidTypeVideo, nil
+	case openrtb2.MarkupNative:
+		return openrtb_ext.BidTypeNative, nil
 	default:
 		return "", fmt.Errorf("unsupported MType %d", bid.MType)
 	}

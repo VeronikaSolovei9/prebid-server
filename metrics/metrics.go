@@ -3,7 +3,7 @@ package metrics
 import (
 	"time"
 
-	"github.com/prebid/prebid-server/openrtb_ext"
+	"github.com/prebid/prebid-server/v3/openrtb_ext"
 )
 
 // Labels defines the labels that can be attached to the metrics.
@@ -13,6 +13,7 @@ type Labels struct {
 	PubID         string // exchange specific ID, so we cannot compile in values
 	CookieFlag    CookieFlag
 	RequestStatus RequestStatus
+	RequestSize   int
 }
 
 // AdapterLabels defines the labels that can be attached to the adapter metrics.
@@ -139,6 +140,8 @@ type DemandSource string
 // ImpMediaType : Media type described in the "imp" JSON object  TODO is this still needed?
 type ImpMediaType string
 
+type EndpointType string
+
 // RequestType : Request type enumeration
 type RequestType string
 
@@ -164,6 +167,7 @@ const PublisherUnknown = "unknown"
 const (
 	DemandWeb     DemandSource = "web"
 	DemandApp     DemandSource = "app"
+	DemandDOOH    DemandSource = "dooh"
 	DemandUnknown DemandSource = "unknown"
 )
 
@@ -171,25 +175,62 @@ func DemandTypes() []DemandSource {
 	return []DemandSource{
 		DemandWeb,
 		DemandApp,
+		DemandDOOH,
 		DemandUnknown,
 	}
 }
 
 // The request types (endpoints)
 const (
-	ReqTypeORTB2Web RequestType = "openrtb2-web"
-	ReqTypeORTB2App RequestType = "openrtb2-app"
-	ReqTypeAMP      RequestType = "amp"
-	ReqTypeVideo    RequestType = "video"
+	ReqTypeORTB2Web  RequestType = "openrtb2-web"
+	ReqTypeORTB2App  RequestType = "openrtb2-app"
+	ReqTypeORTB2DOOH RequestType = "openrtb2-dooh"
+	ReqTypeAMP       RequestType = "amp"
+	ReqTypeVideo     RequestType = "video"
 )
 
 func RequestTypes() []RequestType {
 	return []RequestType{
 		ReqTypeORTB2Web,
 		ReqTypeORTB2App,
+		ReqTypeORTB2DOOH,
 		ReqTypeAMP,
 		ReqTypeVideo,
 	}
+}
+
+// Endpoint type constants
+const (
+	EndpointAuction EndpointType = "auction"
+	EndpointVideo   EndpointType = "video"
+	EndpointAmp     EndpointType = "amp"
+)
+
+func EndpointTypes() []EndpointType {
+	return []EndpointType{
+		EndpointAuction,
+		EndpointVideo,
+		EndpointAmp,
+	}
+}
+
+func GetEndpointFromRequestType(requestType RequestType) EndpointType {
+	var requestEndpoint EndpointType
+
+	switch requestType {
+	case ReqTypeORTB2Web:
+		fallthrough
+	case ReqTypeORTB2App:
+		fallthrough
+	case ReqTypeORTB2DOOH:
+		requestEndpoint = EndpointAuction
+	case ReqTypeAMP:
+		requestEndpoint = EndpointAmp
+	case ReqTypeVideo:
+		requestEndpoint = EndpointVideo
+	}
+
+	return requestEndpoint
 }
 
 // The media types described in the "imp" json objects
@@ -230,7 +271,7 @@ const (
 	RequestStatusBadInput         RequestStatus = "badinput"
 	RequestStatusErr              RequestStatus = "err"
 	RequestStatusNetworkErr       RequestStatus = "networkerr"
-	RequestStatusBlacklisted      RequestStatus = "blacklistedacctorapp"
+	RequestStatusBlockedApp       RequestStatus = "blockedapp"
 	RequestStatusQueueTimeout     RequestStatus = "queuetimeout"
 	RequestStatusAccountConfigErr RequestStatus = "acctconfigerr"
 )
@@ -241,7 +282,7 @@ func RequestStatuses() []RequestStatus {
 		RequestStatusBadInput,
 		RequestStatusErr,
 		RequestStatusNetworkErr,
-		RequestStatusBlacklisted,
+		RequestStatusBlockedApp,
 		RequestStatusQueueTimeout,
 		RequestStatusAccountConfigErr,
 	}
@@ -267,6 +308,7 @@ const (
 	AdapterErrorTimeout             AdapterError = "timeout"
 	AdapterErrorFailedToRequestBids AdapterError = "failedtorequestbid"
 	AdapterErrorValidation          AdapterError = "validation"
+	AdapterErrorTmaxTimeout         AdapterError = "tmaxtimeout"
 	AdapterErrorUnknown             AdapterError = "unknown_error"
 )
 
@@ -277,6 +319,7 @@ func AdapterErrors() []AdapterError {
 		AdapterErrorTimeout,
 		AdapterErrorFailedToRequestBids,
 		AdapterErrorValidation,
+		AdapterErrorTmaxTimeout,
 		AdapterErrorUnknown,
 	}
 }
@@ -355,7 +398,7 @@ const (
 	SyncerCookieSyncOK               SyncerCookieSyncStatus = "ok"
 	SyncerCookieSyncPrivacyBlocked   SyncerCookieSyncStatus = "privacy_blocked"
 	SyncerCookieSyncAlreadySynced    SyncerCookieSyncStatus = "already_synced"
-	SyncerCookieSyncTypeNotSupported SyncerCookieSyncStatus = "type_not_supported"
+	SyncerCookieSyncRejectedByFilter SyncerCookieSyncStatus = "rejected_by_filter"
 )
 
 // SyncerRequestStatuses returns possible syncer statuses.
@@ -364,7 +407,7 @@ func SyncerRequestStatuses() []SyncerCookieSyncStatus {
 		SyncerCookieSyncOK,
 		SyncerCookieSyncPrivacyBlocked,
 		SyncerCookieSyncAlreadySynced,
-		SyncerCookieSyncTypeNotSupported,
+		SyncerCookieSyncRejectedByFilter,
 	}
 }
 
@@ -421,6 +464,7 @@ func SyncerSetUidStatuses() []SyncerSetUidStatus {
 // is generally not useful.
 type MetricsEngine interface {
 	RecordConnectionAccept(success bool)
+	RecordTMaxTimeout()
 	RecordConnectionClose(success bool)
 	RecordRequest(labels Labels)                           // ignores adapter. only statusOk and statusErr fom status
 	RecordImps(labels ImpLabels)                           // RecordImps across openRTB2 engines that support the 'Native' Imp Type
@@ -448,9 +492,11 @@ type MetricsEngine interface {
 	RecordRequestQueueTime(success bool, requestType RequestType, length time.Duration)
 	RecordTimeoutNotice(success bool)
 	RecordRequestPrivacy(privacy PrivacyLabels)
+	RecordAdapterBuyerUIDScrubbed(adapterName openrtb_ext.BidderName)
 	RecordAdapterGDPRRequestBlocked(adapterName openrtb_ext.BidderName)
 	RecordDebugRequest(debugEnabled bool, pubId string)
 	RecordStoredResponse(pubId string)
+	RecordGvlListRequest()
 	RecordAdsCertReq(success bool)
 	RecordAdsCertSignTime(adsCertSignTime time.Duration)
 	RecordBidValidationCreativeSizeError(adapter openrtb_ext.BidderName, account string)
@@ -464,8 +510,7 @@ type MetricsEngine interface {
 	RecordModuleSuccessRejected(labels ModuleLabels)
 	RecordModuleExecutionError(labels ModuleLabels)
 	RecordModuleTimeout(labels ModuleLabels)
-	RecordAccountGDPRPurposeWarning(account string, purposeName string)
-	RecordAccountGDPRChannelEnabledWarning(account string)
-	RecordAccountCCPAChannelEnabledWarning(account string)
-	RecordAccountUpgradeStatus(account string)
+	RecordAdapterThrottled(adapterName openrtb_ext.BidderName)
+	RecordAdapterConnectionDialError(adapterName openrtb_ext.BidderName)
+	RecordAdapterConnectionDialTime(adapterName openrtb_ext.BidderName, dialStartTime time.Duration)
 }

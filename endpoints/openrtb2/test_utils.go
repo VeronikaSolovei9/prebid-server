@@ -16,30 +16,32 @@ import (
 
 	"github.com/buger/jsonparser"
 	"github.com/julienschmidt/httprouter"
-	"github.com/prebid/openrtb/v19/openrtb2"
-	"github.com/prebid/openrtb/v19/openrtb3"
-	"github.com/prebid/prebid-server/adapters"
-	"github.com/prebid/prebid-server/analytics"
-	analyticsConf "github.com/prebid/prebid-server/analytics/config"
-	"github.com/prebid/prebid-server/config"
-	"github.com/prebid/prebid-server/currency"
-	"github.com/prebid/prebid-server/errortypes"
-	"github.com/prebid/prebid-server/exchange"
-	"github.com/prebid/prebid-server/experiment/adscert"
-	"github.com/prebid/prebid-server/gdpr"
-	"github.com/prebid/prebid-server/hooks"
-	"github.com/prebid/prebid-server/hooks/hookexecution"
-	"github.com/prebid/prebid-server/hooks/hookstage"
-	"github.com/prebid/prebid-server/macros"
-	"github.com/prebid/prebid-server/metrics"
-	metricsConfig "github.com/prebid/prebid-server/metrics/config"
-	"github.com/prebid/prebid-server/openrtb_ext"
-	pbc "github.com/prebid/prebid-server/prebid_cache_client"
-	"github.com/prebid/prebid-server/stored_requests"
-	"github.com/prebid/prebid-server/stored_requests/backends/empty_fetcher"
-	"github.com/prebid/prebid-server/util/iputil"
-	"github.com/prebid/prebid-server/util/uuidutil"
-	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	"github.com/prebid/openrtb/v20/openrtb2"
+	"github.com/prebid/openrtb/v20/openrtb3"
+	"github.com/prebid/prebid-server/v3/adapters"
+	"github.com/prebid/prebid-server/v3/analytics"
+	analyticsBuild "github.com/prebid/prebid-server/v3/analytics/build"
+	"github.com/prebid/prebid-server/v3/config"
+	"github.com/prebid/prebid-server/v3/currency"
+	"github.com/prebid/prebid-server/v3/errortypes"
+	"github.com/prebid/prebid-server/v3/exchange"
+	"github.com/prebid/prebid-server/v3/experiment/adscert"
+	"github.com/prebid/prebid-server/v3/gdpr"
+	"github.com/prebid/prebid-server/v3/hooks"
+	"github.com/prebid/prebid-server/v3/hooks/hookexecution"
+	"github.com/prebid/prebid-server/v3/hooks/hookstage"
+	"github.com/prebid/prebid-server/v3/macros"
+	"github.com/prebid/prebid-server/v3/metrics"
+	metricsConfig "github.com/prebid/prebid-server/v3/metrics/config"
+	"github.com/prebid/prebid-server/v3/openrtb_ext"
+	"github.com/prebid/prebid-server/v3/ortb"
+	pbc "github.com/prebid/prebid-server/v3/prebid_cache_client"
+	"github.com/prebid/prebid-server/v3/stored_requests"
+	"github.com/prebid/prebid-server/v3/stored_requests/backends/empty_fetcher"
+	"github.com/prebid/prebid-server/v3/util/iputil"
+	"github.com/prebid/prebid-server/v3/util/jsonutil"
+	"github.com/prebid/prebid-server/v3/util/uuidutil"
+	jsonpatch "gopkg.in/evanphx/json-patch.v5"
 )
 
 // In this file we define:
@@ -62,15 +64,16 @@ const (
 
 type testCase struct {
 	// Common
-	endpointType            int
-	Description             string            `json:"description"`
-	Config                  *testConfigValues `json:"config"`
-	BidRequest              json.RawMessage   `json:"mockBidRequest"`
-	ExpectedValidatedBidReq json.RawMessage   `json:"expectedValidatedBidRequest"`
-	ExpectedReturnCode      int               `json:"expectedReturnCode,omitempty"`
-	ExpectedErrorMessage    string            `json:"expectedErrorMessage"`
-	Query                   string            `json:"query"`
-	planBuilder             hooks.ExecutionPlanBuilder
+	endpointType               int
+	Description                string                     `json:"description"`
+	Config                     *testConfigValues          `json:"config"`
+	BidRequest                 json.RawMessage            `json:"mockBidRequest"`
+	ExpectedValidatedBidReq    json.RawMessage            `json:"expectedValidatedBidRequest"`
+	ExpectedMockBidderRequests map[string]json.RawMessage `json:"expectedMockBidderRequests"`
+	ExpectedReturnCode         int                        `json:"expectedReturnCode,omitempty"`
+	ExpectedErrorMessage       string                     `json:"expectedErrorMessage"`
+	Query                      string                     `json:"query"`
+	planBuilder                hooks.ExecutionPlanBuilder
 
 	// "/openrtb2/auction" endpoint JSON test info
 	ExpectedBidResponse json.RawMessage `json:"expectedBidResponse"`
@@ -82,14 +85,35 @@ type testCase struct {
 }
 
 type testConfigValues struct {
-	AccountRequired     bool                          `json:"accountRequired"`
-	AliasJSON           string                        `json:"aliases"`
-	BlacklistedAccounts []string                      `json:"blacklistedAccts"`
-	BlacklistedApps     []string                      `json:"blacklistedApps"`
-	DisabledAdapters    []string                      `json:"disabledAdapters"`
-	CurrencyRates       map[string]map[string]float64 `json:"currencyRates"`
-	MockBidders         []mockBidderHandler           `json:"mockBidders"`
-	RealParamsValidator bool                          `json:"realParamsValidator"`
+	AccountRequired     bool                           `json:"accountRequired"`
+	AliasJSON           string                         `json:"aliases"`
+	BlockedApps         []string                       `json:"blockedApps"`
+	DisabledAdapters    []string                       `json:"disabledAdapters"`
+	CurrencyRates       map[string]map[string]float64  `json:"currencyRates"`
+	MockBidders         []mockBidderHandler            `json:"mockBidders"`
+	RealParamsValidator bool                           `json:"realParamsValidator"`
+	BidderInfos         map[string]bidderInfoOverrides `json:"bidderInfoOverrides"`
+	PreferredMediaType  openrtb_ext.PreferredMediaType `json:"preferredmediatype"`
+}
+type bidderInfoOverrides struct {
+	OpenRTB      *OpenRTBInfo      `json:"openrtb"`
+	Capabilities *CapabilitiesInfo `json:"capabilities"`
+}
+type OpenRTBInfo struct {
+	Version              string `json:"version"`
+	MultiformatSupported *bool  `json:"multiformat-supported"`
+}
+
+// CapabilitiesInfo specifies the supported platforms for a bidder.
+type CapabilitiesInfo struct {
+	App  *PlatformInfo `json:"app" mapstructure:"app"`
+	Site *PlatformInfo `json:"site" mapstructure:"site"`
+	DOOH *PlatformInfo `json:"dooh" mapstructure:"dooh"`
+}
+
+// PlatformInfo specifies the supported media types for a bidder.
+type PlatformInfo struct {
+	MediaTypes []openrtb_ext.BidType `yaml:"mediaTypes" mapstructure:"mediaTypes"`
 }
 
 type brokenExchange struct{}
@@ -926,13 +950,12 @@ func (s mockCurrencyRatesClient) handle(w http.ResponseWriter, req *http.Request
 	s.data.DataAsOfRaw = "2018-09-12"
 
 	// Marshal the response and http write it
-	currencyServerJsonResponse, err := json.Marshal(&s.data)
+	currencyServerJsonResponse, err := jsonutil.Marshal(&s.data)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Write(currencyServerJsonResponse)
-	return
 }
 
 // mockBidderHandler carries mock bidder server information that will be read from JSON test files
@@ -942,6 +965,7 @@ type mockBidderHandler struct {
 	Currency   string  `json:"currency"`
 	Price      float64 `json:"price"`
 	DealID     string  `json:"dealid"`
+	Seat       string  `json:"seat"`
 }
 
 func (b mockBidderHandler) bid(w http.ResponseWriter, req *http.Request) {
@@ -951,13 +975,13 @@ func (b mockBidderHandler) bid(w http.ResponseWriter, req *http.Request) {
 
 	// Unmarshal exit if error
 	var openrtb2Request openrtb2.BidRequest
-	if err := json.Unmarshal(buf.Bytes(), &openrtb2Request); err != nil {
+	if err := jsonutil.UnmarshalValid(buf.Bytes(), &openrtb2Request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	var openrtb2ImpExt map[string]json.RawMessage
-	if err := json.Unmarshal(openrtb2Request.Imp[0].Ext, &openrtb2ImpExt); err != nil {
+	if err := jsonutil.UnmarshalValid(openrtb2Request.Imp[0].Ext, &openrtb2ImpExt); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -988,19 +1012,20 @@ func (b mockBidderHandler) bid(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Marshal the response and http write it
-	serverJsonResponse, err := json.Marshal(&serverResponseObject)
+	serverJsonResponse, err := jsonutil.Marshal(&serverResponseObject)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Write(serverJsonResponse)
-	return
 }
 
 // mockAdapter is a mock impression-splitting adapter
 type mockAdapter struct {
 	mockServerURL string
 	Server        config.Server
+	seat          string
+	requestData   [][]byte
 }
 
 func Builder(bidderName openrtb_ext.BidderName, config config.Adapter, server config.Server) (adapters.Bidder, error) {
@@ -1011,7 +1036,7 @@ func Builder(bidderName openrtb_ext.BidderName, config config.Adapter, server co
 	return adapter, nil
 }
 
-func (a mockAdapter) MakeRequests(request *openrtb2.BidRequest, requestInfo *adapters.ExtraRequestInfo) ([]*adapters.RequestData, []error) {
+func (a *mockAdapter) MakeRequests(request *openrtb2.BidRequest, requestInfo *adapters.ExtraRequestInfo) ([]*adapters.RequestData, []error) {
 	var requests []*adapters.RequestData
 	var errors []error
 
@@ -1019,7 +1044,7 @@ func (a mockAdapter) MakeRequests(request *openrtb2.BidRequest, requestInfo *ada
 	for _, imp := range request.Imp {
 		requestCopy.Imp = []openrtb2.Imp{imp}
 
-		requestJSON, err := json.Marshal(request)
+		requestJSON, err := jsonutil.Marshal(request)
 		if err != nil {
 			errors = append(errors, err)
 			continue
@@ -1031,11 +1056,12 @@ func (a mockAdapter) MakeRequests(request *openrtb2.BidRequest, requestInfo *ada
 			Body:   requestJSON,
 		}
 		requests = append(requests, requestData)
+		a.requestData = append(a.requestData, requestData.Body)
 	}
 	return requests, errors
 }
 
-func (a mockAdapter) MakeBids(request *openrtb2.BidRequest, requestData *adapters.RequestData, responseData *adapters.ResponseData) (*adapters.BidderResponse, []error) {
+func (a *mockAdapter) MakeBids(request *openrtb2.BidRequest, requestData *adapters.RequestData, responseData *adapters.ResponseData) (*adapters.BidderResponse, []error) {
 	if responseData.StatusCode != http.StatusOK {
 		switch responseData.StatusCode {
 		case http.StatusNoContent:
@@ -1052,7 +1078,7 @@ func (a mockAdapter) MakeBids(request *openrtb2.BidRequest, requestData *adapter
 	}
 
 	var publisherResponse openrtb2.BidResponse
-	if err := json.Unmarshal(responseData.Body, &publisherResponse); err != nil {
+	if err := jsonutil.UnmarshalValid(responseData.Body, &publisherResponse); err != nil {
 		return nil, []error{err}
 	}
 
@@ -1065,6 +1091,9 @@ func (a mockAdapter) MakeBids(request *openrtb2.BidRequest, requestData *adapter
 					b := &adapters.TypedBid{
 						Bid:     &seatBid.Bid[i],
 						BidType: openrtb_ext.BidTypeBanner,
+					}
+					if len(a.seat) > 0 {
+						b.Seat = openrtb_ext.BidderName(a.seat)
 					}
 					rv.Bids = append(rv.Bids, b)
 				}
@@ -1093,6 +1122,24 @@ func getBidderInfos(disabledAdapters []string, biddersNames []openrtb_ext.Bidder
 	return biddersInfos
 }
 
+func enableBidders(bidderInfos config.BidderInfos) {
+	for name, bidderInfo := range bidderInfos {
+		if bidderInfo.Disabled {
+			bidderInfo.Disabled = false
+			bidderInfos[name] = bidderInfo
+		}
+	}
+}
+
+func disableBidders(disabledAdapters []string, bidderInfos config.BidderInfos) {
+	for _, disabledAdapter := range disabledAdapters {
+		if bidderInfo, ok := bidderInfos[disabledAdapter]; ok {
+			bidderInfo.Disabled = true
+			bidderInfos[disabledAdapter] = bidderInfo
+		}
+	}
+}
+
 func newBidderInfo(isDisabled bool) config.BidderInfo {
 	return config.BidderInfo{
 		Disabled: isDisabled,
@@ -1116,7 +1163,7 @@ func parseTestData(fileData []byte, testFile string) (testCase, error) {
 
 	jsonTestConfig, _, _, err = jsonparser.Get(fileData, "config")
 	if err == nil {
-		if err = json.Unmarshal(jsonTestConfig, parsedTestData.Config); err != nil {
+		if err = jsonutil.UnmarshalValid(jsonTestConfig, parsedTestData.Config); err != nil {
 			return parsedTestData, fmt.Errorf("Error unmarshaling root.config from file %s. Desc: %v.", testFile, err)
 		}
 	}
@@ -1137,39 +1184,40 @@ func parseTestData(fileData []byte, testFile string) (testCase, error) {
 		return parsedTestData, fmt.Errorf("Test case %s should come with either a valid expectedBidResponse or a valid expectedErrorMessage, not both.", testFile)
 	}
 
+	// Get optional expected validated bid request
+	parsedTestData.ExpectedValidatedBidReq, _, _, err = jsonparser.Get(fileData, "expectedValidatedBidRequest")
+
+	// Get optional expected mock bidder requests
+	jsonExpectedMockBidderRequests, _, _, err := jsonparser.Get(fileData, "expectedMockBidderRequests")
+	if err == nil && jsonExpectedMockBidderRequests != nil {
+		parsedTestData.ExpectedMockBidderRequests = make(map[string]json.RawMessage)
+		if err = jsonutil.UnmarshalValid(jsonExpectedMockBidderRequests, &parsedTestData.ExpectedMockBidderRequests); err != nil {
+			return parsedTestData, fmt.Errorf("Error unmarshaling root.expectedMockBidderRequests from file %s. Desc: %v.", testFile, err)
+		}
+	}
+
 	parsedTestData.ExpectedReturnCode = int(parsedReturnCode)
 
 	return parsedTestData, nil
 }
 
-func (tc *testConfigValues) getBlacklistedAppMap() map[string]bool {
-	var blacklistedAppMap map[string]bool
+func (tc *testConfigValues) getBlockedAppLookup() map[string]bool {
+	var blockedAppLookup map[string]bool
 
-	if len(tc.BlacklistedApps) > 0 {
-		blacklistedAppMap = make(map[string]bool, len(tc.BlacklistedApps))
-		for _, app := range tc.BlacklistedApps {
-			blacklistedAppMap[app] = true
+	if len(tc.BlockedApps) > 0 {
+		blockedAppLookup = make(map[string]bool, len(tc.BlockedApps))
+		for _, app := range tc.BlockedApps {
+			blockedAppLookup[app] = true
 		}
 	}
-	return blacklistedAppMap
-}
-
-func (tc *testConfigValues) getBlackListedAccountMap() map[string]bool {
-	var blacklistedAccountMap map[string]bool
-
-	if len(tc.BlacklistedAccounts) > 0 {
-		blacklistedAccountMap = make(map[string]bool, len(tc.BlacklistedAccounts))
-		for _, account := range tc.BlacklistedAccounts {
-			blacklistedAccountMap[account] = true
-		}
-	}
-	return blacklistedAccountMap
+	return blockedAppLookup
 }
 
 // exchangeTestWrapper is a wrapper that asserts the openrtb2 bid request just before the HoldAuction call
 type exchangeTestWrapper struct {
 	ex                    exchange.Exchange
 	actualValidatedBidReq *openrtb2.BidRequest
+	adapters              map[openrtb_ext.BidderName]exchange.AdaptedBidder
 }
 
 func (te *exchangeTestWrapper) HoldAuction(ctx context.Context, r *exchange.AuctionRequest, debugLog *exchange.DebugLog) (*exchange.AuctionResponse, error) {
@@ -1187,20 +1235,27 @@ func (te *exchangeTestWrapper) HoldAuction(ctx context.Context, r *exchange.Auct
 }
 
 // buildTestExchange returns an exchange with mock bidder servers and mock currency conversion server
-func buildTestExchange(testCfg *testConfigValues, adapterMap map[openrtb_ext.BidderName]exchange.AdaptedBidder, mockBidServersArray []*httptest.Server, mockCurrencyRatesServer *httptest.Server, bidderInfos config.BidderInfos, cfg *config.Configuration, met metrics.MetricsEngine, mockFetcher stored_requests.CategoryFetcher) (exchange.Exchange, []*httptest.Server) {
+func buildTestExchange(testCfg *testConfigValues, adapterMap map[openrtb_ext.BidderName]exchange.AdaptedBidder, mockBidServersArray []*httptest.Server, mockCurrencyRatesServer *httptest.Server, bidderInfos config.BidderInfos, cfg *config.Configuration, met metrics.MetricsEngine, mockFetcher stored_requests.CategoryFetcher, requestValidator ortb.RequestValidator) (exchange.Exchange, []*httptest.Server) {
 	if len(testCfg.MockBidders) == 0 {
 		testCfg.MockBidders = append(testCfg.MockBidders, mockBidderHandler{BidderName: "appnexus", Currency: "USD", Price: 0.00})
 	}
+	singleFormatBidders := make(map[openrtb_ext.BidderName]struct{})
 	for _, mockBidder := range testCfg.MockBidders {
 		bidServer := httptest.NewServer(http.HandlerFunc(mockBidder.bid))
-		bidderAdapter := mockAdapter{mockServerURL: bidServer.URL}
+		bidderAdapter := &mockAdapter{mockServerURL: bidServer.URL, seat: mockBidder.Seat}
 		bidderName := openrtb_ext.BidderName(mockBidder.BidderName)
 
-		adapterMap[bidderName] = exchange.AdaptBidder(bidderAdapter, bidServer.Client(), &config.Configuration{}, &metricsConfig.NilMetricsEngine{}, bidderName, nil, "")
+		infoAwareBidderAdapter := adapters.BuildInfoAwareBidder(bidderAdapter, bidderInfos[string(bidderName)])
+
+		adapterMap[bidderName] = exchange.AdaptBidder(infoAwareBidderAdapter, bidServer.Client(), &config.Configuration{}, &metricsConfig.NilMetricsEngine{}, bidderName, nil, "")
 		mockBidServersArray = append(mockBidServersArray, bidServer)
+
+		if bidderInfo := bidderInfos[string(bidderName)]; bidderInfo.OpenRTB != nil && bidderInfo.OpenRTB.MultiformatSupported != nil && !*bidderInfo.OpenRTB.MultiformatSupported {
+			singleFormatBidders[bidderName] = struct{}{}
+		}
 	}
 
-	mockCurrencyConverter := currency.NewRateConverter(mockCurrencyRatesServer.Client(), mockCurrencyRatesServer.URL, time.Second)
+	mockCurrencyConverter := currency.NewRateConverter(mockCurrencyRatesServer.Client(), time.Second, mockCurrencyRatesServer.URL, time.Second)
 	mockCurrencyConverter.Run()
 
 	gdprPermsBuilder := fakePermissionsBuilder{
@@ -1210,6 +1265,7 @@ func buildTestExchange(testCfg *testConfigValues, adapterMap map[openrtb_ext.Bid
 	testExchange := exchange.NewExchange(adapterMap,
 		&wellBehavedCache{},
 		cfg,
+		requestValidator,
 		nil,
 		met,
 		bidderInfos,
@@ -1218,10 +1274,13 @@ func buildTestExchange(testCfg *testConfigValues, adapterMap map[openrtb_ext.Bid
 		mockFetcher,
 		&adscert.NilSigner{},
 		macros.NewStringIndexBasedReplacer(),
+		nil,
+		singleFormatBidders,
 	)
 
 	testExchange = &exchangeTestWrapper{
-		ex: testExchange,
+		ex:       testExchange,
+		adapters: adapterMap,
 	}
 
 	return testExchange, mockBidServersArray
@@ -1244,9 +1303,51 @@ func buildTestEndpoint(test testCase, cfg *config.Configuration) (httprouter.Han
 		paramValidator = mockBidderParamValidator{}
 	}
 
-	bidderInfos := getBidderInfos(test.Config.DisabledAdapters, openrtb_ext.CoreBidderNames())
+	bidderInfos, _ := config.LoadBidderInfoFromDisk("../../static/bidder-info")
+	for bidder, overrides := range test.Config.BidderInfos {
+		if bi, ok := bidderInfos[bidder]; ok {
+			if overrides.OpenRTB != nil || overrides.Capabilities != nil {
+				if bi.OpenRTB == nil {
+					bi.OpenRTB = &config.OpenRTBInfo{}
+				}
+				if overrides.OpenRTB != nil {
+					if len(overrides.OpenRTB.Version) > 0 {
+						bi.OpenRTB.Version = overrides.OpenRTB.Version
+					}
+					if overrides.OpenRTB.MultiformatSupported != nil {
+						bi.OpenRTB.MultiformatSupported = overrides.OpenRTB.MultiformatSupported
+					}
+				}
+				if overrides.Capabilities != nil {
+					if bi.Capabilities == nil {
+						bi.Capabilities = &config.CapabilitiesInfo{}
+					}
+
+					if overrides.Capabilities.Site != nil {
+						bi.Capabilities.Site = &config.PlatformInfo{}
+						bi.Capabilities.Site.MediaTypes = overrides.Capabilities.Site.MediaTypes
+					}
+
+					if overrides.Capabilities.App != nil {
+						bi.Capabilities.App = &config.PlatformInfo{}
+						bi.Capabilities.App.MediaTypes = overrides.Capabilities.App.MediaTypes
+					}
+
+					if overrides.Capabilities.DOOH != nil {
+						bi.Capabilities.DOOH = &config.PlatformInfo{}
+						bi.Capabilities.DOOH.MediaTypes = overrides.Capabilities.DOOH.MediaTypes
+					}
+				}
+				bidderInfos[bidder] = bi
+			}
+		}
+	}
+
+	enableBidders(bidderInfos)
+	disableBidders(test.Config.DisabledAdapters, bidderInfos)
 	bidderMap := exchange.GetActiveBidders(bidderInfos)
-	disabledBidders := exchange.GetDisabledBiddersErrorMessages(bidderInfos)
+	disabledBidders := exchange.GetDisabledBidderWarningMessages(bidderInfos)
+	requestValidator := ortb.NewRequestValidator(bidderMap, disabledBidders, paramValidator)
 	met := &metricsConfig.NilMetricsEngine{}
 	mockFetcher := empty_fetcher.EmptyFetcher{}
 
@@ -1262,7 +1363,7 @@ func buildTestEndpoint(test testCase, cfg *config.Configuration) (httprouter.Han
 	}
 	mockCurrencyRatesServer := httptest.NewServer(http.HandlerFunc(mockCurrencyConversionService.handle))
 
-	testExchange, mockBidServersArray := buildTestExchange(test.Config, adapterMap, mockBidServersArray, mockCurrencyRatesServer, bidderInfos, cfg, met, mockFetcher)
+	testExchange, mockBidServersArray := buildTestExchange(test.Config, adapterMap, mockBidServersArray, mockCurrencyRatesServer, bidderInfos, cfg, met, mockFetcher, requestValidator)
 
 	var storedRequestFetcher stored_requests.Fetcher
 	if len(test.StoredRequest) > 0 {
@@ -1278,10 +1379,11 @@ func buildTestEndpoint(test testCase, cfg *config.Configuration) (httprouter.Han
 		storedResponseFetcher = empty_fetcher.EmptyFetcher{}
 	}
 
-	var accountFetcher stored_requests.AccountFetcher
-	accountFetcher = &mockAccountFetcher{
+	accountFetcher := &mockAccountFetcher{
 		data: map[string]json.RawMessage{
-			"malformed_acct": json.RawMessage(`{"disabled":"invalid type"}`),
+			"malformed_acct":             json.RawMessage(`{"disabled":"invalid type"}`),
+			"disabled_acct":              json.RawMessage(`{"disabled":true}`),
+			"alternate_bidder_code_acct": json.RawMessage(`{"disabled":false,"alternatebiddercodes":{"enabled":true,"bidders":{"appnexus":{"enabled":true,"allowedbiddercodes":["groupm"]}}}}`),
 		},
 	}
 
@@ -1290,7 +1392,7 @@ func buildTestEndpoint(test testCase, cfg *config.Configuration) (httprouter.Han
 		planBuilder = hooks.EmptyPlanBuilder{}
 	}
 
-	var endpointBuilder func(uuidutil.UUIDGenerator, exchange.Exchange, openrtb_ext.BidderParamValidator, stored_requests.Fetcher, stored_requests.AccountFetcher, *config.Configuration, metrics.MetricsEngine, analytics.PBSAnalyticsModule, map[string]string, []byte, map[string]openrtb_ext.BidderName, stored_requests.Fetcher, hooks.ExecutionPlanBuilder) (httprouter.Handle, error)
+	var endpointBuilder func(uuidutil.UUIDGenerator, exchange.Exchange, ortb.RequestValidator, stored_requests.Fetcher, stored_requests.AccountFetcher, *config.Configuration, metrics.MetricsEngine, analytics.Runner, map[string]string, []byte, map[string]openrtb_ext.BidderName, stored_requests.Fetcher, hooks.ExecutionPlanBuilder, *exchange.TmaxAdjustmentsPreprocessed) (httprouter.Handle, error)
 
 	switch test.endpointType {
 	case AMP_ENDPOINT:
@@ -1302,17 +1404,18 @@ func buildTestEndpoint(test testCase, cfg *config.Configuration) (httprouter.Han
 	endpoint, err := endpointBuilder(
 		fakeUUIDGenerator{},
 		testExchange,
-		paramValidator,
+		requestValidator,
 		storedRequestFetcher,
 		accountFetcher,
 		cfg,
 		met,
-		analyticsConf.NewPBSAnalytics(&config.Analytics{}),
+		analyticsBuild.New(&config.Analytics{}),
 		disabledBidders,
 		[]byte(test.Config.AliasJSON),
 		bidderMap,
 		storedResponseFetcher,
 		planBuilder,
+		nil,
 	)
 
 	return endpoint, testExchange.(*exchangeTestWrapper), mockBidServersArray, mockCurrencyRatesServer, err
@@ -1412,10 +1515,10 @@ func (p *fakePermissions) BidderSyncAllowed(ctx context.Context, bidder openrtb_
 	return true, nil
 }
 
-func (p *fakePermissions) AuctionActivitiesAllowed(ctx context.Context, bidderCoreName openrtb_ext.BidderName, bidder openrtb_ext.BidderName) (permissions gdpr.AuctionPermissions, err error) {
+func (p *fakePermissions) AuctionActivitiesAllowed(ctx context.Context, bidderCoreName openrtb_ext.BidderName, bidder openrtb_ext.BidderName) gdpr.AuctionPermissions {
 	return gdpr.AuctionPermissions{
 		AllowBidRequest: true,
-	}, nil
+	}
 }
 
 type mockPlanBuilder struct {
@@ -1426,6 +1529,7 @@ type mockPlanBuilder struct {
 	rawBidderResponsePlan        hooks.Plan[hookstage.RawBidderResponse]
 	allProcessedBidResponsesPlan hooks.Plan[hookstage.AllProcessedBidResponses]
 	auctionResponsePlan          hooks.Plan[hookstage.AuctionResponse]
+	exitpointPlan                hooks.Plan[hookstage.Exitpoint]
 }
 
 func (m mockPlanBuilder) PlanForEntrypointStage(_ string) hooks.Plan[hookstage.Entrypoint] {
@@ -1454,6 +1558,10 @@ func (m mockPlanBuilder) PlanForAllProcessedBidResponsesStage(_ string, _ *confi
 
 func (m mockPlanBuilder) PlanForAuctionResponseStage(_ string, _ *config.Account) hooks.Plan[hookstage.AuctionResponse] {
 	return m.auctionResponsePlan
+}
+
+func (m mockPlanBuilder) PlanForExitpointStage(_ string, _ *config.Account) hooks.Plan[hookstage.Exitpoint] {
+	return m.exitpointPlan
 }
 
 func makePlan[H any](hook H) hooks.Plan[H] {
@@ -1591,7 +1699,7 @@ var entryPointHookUpdate = hooks.HookWrapper[hookstage.Entrypoint]{
 
 			ch := hookstage.ChangeSet[hookstage.EntrypointPayload]{}
 			ch.AddMutation(func(payload hookstage.EntrypointPayload) (hookstage.EntrypointPayload, error) {
-				body, err := jsonpatch.MergePatch(payload.Body, []byte(`{"tmax":50}`))
+				body, err := jsonpatch.MergePatch(payload.Body, []byte(`{"tmax":600}`))
 				if err == nil {
 					payload.Body = body
 				}
@@ -1638,4 +1746,21 @@ func (m mockUpdateHook) HandleRawAuctionHook(
 	_ hookstage.RawAuctionRequestPayload,
 ) (hookstage.HookResult[hookstage.RawAuctionRequestPayload], error) {
 	return hookstage.HookResult[hookstage.RawAuctionRequestPayload]{}, nil
+}
+
+type mockUpdateResponseHook struct{}
+
+func (e mockUpdateResponseHook) HandleExitpointHook(
+	_ context.Context,
+	_ hookstage.ModuleInvocationContext,
+	_ hookstage.ExitpointPayload) (hookstage.HookResult[hookstage.ExitpointPayload], error) {
+	c := hookstage.ChangeSet[hookstage.ExitpointPayload]{}
+	c.AddMutation(
+		func(payload hookstage.ExitpointPayload) (hookstage.ExitpointPayload, error) {
+			payload.Response = &openrtb2.BidResponse{ID: "modified-id"}
+			payload.W.Header().Set("Content-Type", "application/json")
+			return payload, nil
+		}, hookstage.MutationUpdate, "exitpoint", "bidResponse.json-response")
+
+	return hookstage.HookResult[hookstage.ExitpointPayload]{ChangeSet: c}, nil
 }

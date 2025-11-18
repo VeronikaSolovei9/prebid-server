@@ -7,20 +7,21 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/prebid/openrtb/v19/openrtb2"
-	"github.com/prebid/prebid-server/adapters"
-	"github.com/prebid/prebid-server/config"
-	"github.com/prebid/prebid-server/errortypes"
-	"github.com/prebid/prebid-server/openrtb_ext"
+	"github.com/prebid/openrtb/v20/openrtb2"
+	"github.com/prebid/prebid-server/v3/adapters"
+	"github.com/prebid/prebid-server/v3/config"
+	"github.com/prebid/prebid-server/v3/errortypes"
+	"github.com/prebid/prebid-server/v3/openrtb_ext"
+	"github.com/prebid/prebid-server/v3/util/jsonutil"
 )
 
-// GumGumAdapter implements Bidder interface.
-type GumGumAdapter struct {
+// adapter implements Bidder interface.
+type adapter struct {
 	URI string
 }
 
 // MakeRequests makes the HTTP requests which should be made to fetch bids.
-func (g *GumGumAdapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adapters.ExtraRequestInfo) ([]*adapters.RequestData, []error) {
+func (g *adapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adapters.ExtraRequestInfo) ([]*adapters.RequestData, []error) {
 	var validImps []openrtb2.Imp
 	var siteCopy openrtb2.Site
 	if request.Site != nil {
@@ -47,7 +48,7 @@ func (g *GumGumAdapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adap
 					siteCopy.Publisher = &openrtb2.Publisher{ID: strconv.FormatFloat(gumgumExt.PubID, 'f', -1, 64)}
 				}
 			}
-
+			//modified Imp along with tagID is added to the request
 			validImps = append(validImps, imp)
 		}
 	}
@@ -76,11 +77,12 @@ func (g *GumGumAdapter) MakeRequests(request *openrtb2.BidRequest, reqInfo *adap
 		Uri:     g.URI,
 		Body:    reqJSON,
 		Headers: headers,
+		ImpIDs:  openrtb_ext.GetImpIDs(request.Imp),
 	}}, errs
 }
 
 // MakeBids unpacks the server's response into Bids.
-func (g *GumGumAdapter) MakeBids(internalRequest *openrtb2.BidRequest, externalRequest *adapters.RequestData, response *adapters.ResponseData) (*adapters.BidderResponse, []error) {
+func (g *adapter) MakeBids(internalRequest *openrtb2.BidRequest, externalRequest *adapters.RequestData, response *adapters.ResponseData) (*adapters.BidderResponse, []error) {
 	if response.StatusCode == http.StatusNoContent {
 		return nil, nil
 	}
@@ -97,7 +99,7 @@ func (g *GumGumAdapter) MakeBids(internalRequest *openrtb2.BidRequest, externalR
 		}}
 	}
 	var bidResp openrtb2.BidResponse
-	if err := json.Unmarshal(response.Body, &bidResp); err != nil {
+	if err := jsonutil.Unmarshal(response.Body, &bidResp); err != nil {
 		return nil, []error{&errortypes.BadServerResponse{
 			Message: fmt.Sprintf("Bad server response: %d. ", err),
 		}}
@@ -120,25 +122,33 @@ func (g *GumGumAdapter) MakeBids(internalRequest *openrtb2.BidRequest, externalR
 			})
 		}
 	}
-
+	if bidResp.Cur != "" {
+		bidResponse.Currency = bidResp.Cur
+	}
 	return bidResponse, errs
 }
 
 func preprocess(imp *openrtb2.Imp) (*openrtb_ext.ExtImpGumGum, error) {
 	var bidderExt adapters.ExtImpBidder
-	if err := json.Unmarshal(imp.Ext, &bidderExt); err != nil {
+	if err := jsonutil.Unmarshal(imp.Ext, &bidderExt); err != nil {
+		err = &errortypes.BadInput{
+			Message: err.Error(),
+		}
+		return nil, err
+	}
+	var gumgumExt openrtb_ext.ExtImpGumGum
+	if err := jsonutil.Unmarshal(bidderExt.Bidder, &gumgumExt); err != nil {
 		err = &errortypes.BadInput{
 			Message: err.Error(),
 		}
 		return nil, err
 	}
 
-	var gumgumExt openrtb_ext.ExtImpGumGum
-	if err := json.Unmarshal(bidderExt.Bidder, &gumgumExt); err != nil {
-		err = &errortypes.BadInput{
-			Message: err.Error(),
+	var ext openrtb_ext.ExtImpAdUnitCode
+	if err := json.Unmarshal(imp.Ext, &ext); err == nil {
+		if ext.Prebid.AdUnitCode != "" {
+			imp.TagID = ext.Prebid.AdUnitCode
 		}
-		return nil, err
 	}
 
 	if imp.Banner != nil && imp.Banner.W == nil && imp.Banner.H == nil && len(imp.Banner.Format) > 0 {
@@ -146,7 +156,6 @@ func preprocess(imp *openrtb2.Imp) (*openrtb_ext.ExtImpGumGum, error) {
 		format := bannerCopy.Format[0]
 		bannerCopy.W = &(format.W)
 		bannerCopy.H = &(format.H)
-
 		if gumgumExt.Slot != 0 {
 			var err error
 			bannerExt := getBiggerFormat(bannerCopy.Format, gumgumExt.Slot)
@@ -155,17 +164,11 @@ func preprocess(imp *openrtb2.Imp) (*openrtb_ext.ExtImpGumGum, error) {
 				return nil, err
 			}
 		}
-
 		imp.Banner = &bannerCopy
 	}
-
 	if imp.Video != nil {
-		err := validateVideoParams(imp.Video)
-		if err != nil {
-			return nil, err
-		}
-
 		if gumgumExt.IrisID != "" {
+			var err error
 			videoCopy := *imp.Video
 			videoExt := openrtb_ext.ExtImpGumGumVideo{IrisID: gumgumExt.IrisID}
 			videoCopy.Ext, err = json.Marshal(&videoExt)
@@ -175,7 +178,13 @@ func preprocess(imp *openrtb2.Imp) (*openrtb_ext.ExtImpGumGum, error) {
 			imp.Video = &videoCopy
 		}
 	}
-
+	if gumgumExt.Product != "" {
+		var err error
+		imp.Ext, err = json.Marshal(map[string]string{"product": gumgumExt.Product})
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &gumgumExt, nil
 }
 
@@ -212,18 +221,9 @@ func getMediaTypeForImpID(impID string, imps []openrtb2.Imp) openrtb_ext.BidType
 	return openrtb_ext.BidTypeVideo
 }
 
-func validateVideoParams(video *openrtb2.Video) (err error) {
-	if video.W == 0 || video.H == 0 || video.MinDuration == 0 || video.MaxDuration == 0 || video.Placement == 0 || video.Linearity == 0 {
-		return &errortypes.BadInput{
-			Message: "Invalid or missing video field(s)",
-		}
-	}
-	return nil
-}
-
 // Builder builds a new instance of the GumGum adapter for the given bidder with the given config.
 func Builder(bidderName openrtb_ext.BidderName, config config.Adapter, server config.Server) (adapters.Bidder, error) {
-	bidder := &GumGumAdapter{
+	bidder := &adapter{
 		URI: config.Endpoint,
 	}
 	return bidder, nil

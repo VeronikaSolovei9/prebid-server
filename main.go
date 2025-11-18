@@ -2,25 +2,26 @@ package main
 
 import (
 	"flag"
-	"math/rand"
 	"net/http"
 	"path/filepath"
 	"runtime"
 	"time"
 
-	"github.com/prebid/prebid-server/config"
-	"github.com/prebid/prebid-server/currency"
-	"github.com/prebid/prebid-server/openrtb_ext"
-	"github.com/prebid/prebid-server/router"
-	"github.com/prebid/prebid-server/server"
-	"github.com/prebid/prebid-server/util/task"
+	jsoniter "github.com/json-iterator/go"
+	"github.com/prebid/prebid-server/v3/config"
+	"github.com/prebid/prebid-server/v3/currency"
+	"github.com/prebid/prebid-server/v3/openrtb_ext"
+	"github.com/prebid/prebid-server/v3/router"
+	"github.com/prebid/prebid-server/v3/server"
+	"github.com/prebid/prebid-server/v3/util/jsonutil"
+	"github.com/prebid/prebid-server/v3/util/task"
 
 	"github.com/golang/glog"
 	"github.com/spf13/viper"
 )
 
 func init() {
-	rand.Seed(time.Now().UnixNano())
+	jsoniter.RegisterExtension(&jsonutil.RawMessageExtension{})
 }
 
 func main() {
@@ -64,9 +65,10 @@ func loadConfig(bidderInfos config.BidderInfos) (*config.Configuration, error) {
 }
 
 func serve(cfg *config.Configuration) error {
+	httpTimeout := time.Duration(cfg.CurrencyConverter.FetchTimeoutMilliseconds) * time.Millisecond
 	fetchingInterval := time.Duration(cfg.CurrencyConverter.FetchIntervalSeconds) * time.Second
 	staleRatesThreshold := time.Duration(cfg.CurrencyConverter.StaleRatesSeconds) * time.Second
-	currencyConverter := currency.NewRateConverter(&http.Client{}, cfg.CurrencyConverter.FetchURL, staleRatesThreshold)
+	currencyConverter := currency.NewRateConverter(&http.Client{}, httpTimeout, cfg.CurrencyConverter.FetchURL, staleRatesThreshold)
 
 	currencyConverterTickerTask := task.NewTickerTask(fetchingInterval, currencyConverter)
 	currencyConverterTickerTask.Start()
@@ -77,7 +79,9 @@ func serve(cfg *config.Configuration) error {
 	}
 
 	corsRouter := router.SupportCORS(r)
-	server.Listen(cfg, router.NoCache{Handler: corsRouter}, router.Admin(currencyConverter, fetchingInterval), r.MetricsEngine)
+	if err := server.Listen(cfg, router.NoCache{Handler: corsRouter}, router.Admin(currencyConverter, fetchingInterval), r.MetricsEngine); err != nil {
+		glog.Fatalf("prebid-server returned an error: %v", err)
+	}
 
 	r.Shutdown()
 	return nil

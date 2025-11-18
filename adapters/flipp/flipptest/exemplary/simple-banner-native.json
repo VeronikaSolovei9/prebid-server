@@ -30,9 +30,8 @@
                                 "creativeType": "NativeX",
                                 "siteId": 1243066,
                                 "zoneIds": [285431],
-                                "ip": "123.123.123.124",
                                 "options": {
-                                   "startCompact": true,
+                                   "startCompact": false,
                                    "contentCode": "publisher-test-2"
                                 }
                         }
@@ -46,7 +45,7 @@
             "expectedRequest": {
                 "uri": "http://example.com/pserver",
                 "body": {
-                    "ip":"123.123.123.124",
+                    "ip":"123.123.123.123",
                     "keywords":[
                        ""
                     ],
@@ -73,7 +72,6 @@
                              285431
                           ],
                           "options": {
-                             "startCompact": true,
                              "contentCode": "publisher-test-2"
                           }
                        }
@@ -82,7 +80,8 @@
                     "user":{
                        "key":"1234"
                     }
-                }
+                },
+                "impIDs":["test-imp-id"]
             },
             "mockResponse": {
                 "status": 200,
@@ -99,7 +98,8 @@
                                         "data": {
                                             "customData": {
                                                 "campaignConfigUrl": "https://campaign-config.flipp.com/dist-campaign-admin/215",
-                                                "campaignNameIdentifier": "US Grocery Demo (Kroger)"
+                                                "campaignNameIdentifier": "US Grocery Demo (Kroger)",
+                                                "compactHeight": 700
                                             },
                                             "height": 1800,
                                             "width": 300
@@ -167,7 +167,8 @@
                         "price": 12.34,
                         "adm": "creativeContent",
                         "crid": "81325690",
-                        "w": 300
+                        "w": 300,
+                        "h": 2400
                     },
                     "type": "banner"
                 }

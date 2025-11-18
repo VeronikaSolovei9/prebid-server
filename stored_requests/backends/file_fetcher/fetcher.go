@@ -3,12 +3,14 @@ package file_fetcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/prebid/prebid-server/stored_requests"
-	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	"github.com/prebid/prebid-server/v3/stored_requests"
+	"github.com/prebid/prebid-server/v3/util/jsonutil"
+	jsonpatch "gopkg.in/evanphx/json-patch.v5"
 )
 
 // NewFileFetcher _immediately_ loads stored request data from local files.
@@ -34,8 +36,15 @@ func (fetcher *eagerFetcher) FetchRequests(ctx context.Context, requestIDs []str
 	return storedRequests, storedImpressions, errs
 }
 
+// Fetch Responses - Implements the interface to read the stored response information from the fetcher's FileSystem, the directory name is "stored_responses"
 func (fetcher *eagerFetcher) FetchResponses(ctx context.Context, ids []string) (data map[string]json.RawMessage, errs []error) {
-	return nil, nil
+	storedRespFS, found := fetcher.FileSystem.Directories["stored_responses"]
+	if !found {
+		return nil, append(errs, errors.New(`no "stored_responses" directory found`))
+	}
+
+	data = storedRespFS.Files
+	return data, appendErrors("Response", ids, data, nil)
 }
 
 // FetchAccount fetches the host account configuration for a publisher
@@ -51,6 +60,9 @@ func (fetcher *eagerFetcher) FetchAccount(ctx context.Context, accountDefaultsJS
 		}}
 	}
 
+	if accountDefaultsJSON == nil {
+		return accountJSON, nil
+	}
 	completeJSON, err := jsonpatch.MergePatch(accountDefaultsJSON, accountJSON)
 	if err != nil {
 		return nil, []error{err}
@@ -78,7 +90,7 @@ func (fetcher *eagerFetcher) FetchCategories(ctx context.Context, primaryAdServe
 
 			tmp := make(map[string]stored_requests.Category)
 
-			if err := json.Unmarshal(file, &tmp); err != nil {
+			if err := jsonutil.UnmarshalValid(file, &tmp); err != nil {
 				return "", fmt.Errorf("Unable to unmarshal categories for adserver: '%s', publisherId: '%s'", primaryAdServer, publisherId)
 			}
 			fetcher.Categories[fileName] = tmp

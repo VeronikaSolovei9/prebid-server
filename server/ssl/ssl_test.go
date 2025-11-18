@@ -5,11 +5,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCertsFromFilePoolExists(t *testing.T) {
 	// Load hardcoded certificates found in ssl.go
-	certPool := GetRootCAPool()
+	certPool, certErr := createCertPoolFromEmbedded()
+	require.NoError(t, certErr)
 
 	// Assert loaded certificates by looking at the length of the subjects array of strings
 	subjects := certPool.Subjects()
@@ -47,7 +49,7 @@ func TestAppendPEMFileToRootCAPoolFail(t *testing.T) {
 
 	// In this test we are going to pass a file that does not exist as value of second argument
 	fakeCertificatesFile := "mockcertificates/NO-FILE.pem"
-	certPool, err := AppendPEMFileToRootCAPool(certPool, fakeCertificatesFile)
+	_, err := AppendPEMFileToRootCAPool(certPool, fakeCertificatesFile)
 
 	// Assert AppendPEMFileToRootCAPool correctly throws an error when trying to load an nonexisting file
 	assert.Errorf(t, err, "AppendPEMFileToRootCAPool should throw an error by while loading fake file %s \n", fakeCertificatesFile)

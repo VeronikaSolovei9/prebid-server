@@ -4,13 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"time"
 
-	"github.com/prebid/openrtb/v19/openrtb2"
-	"github.com/prebid/prebid-server/config"
-	"github.com/prebid/prebid-server/currency"
-	"github.com/prebid/prebid-server/metrics"
-	"github.com/prebid/prebid-server/openrtb_ext"
+	"github.com/prebid/openrtb/v20/openrtb2"
+	"github.com/prebid/prebid-server/v3/config"
+	"github.com/prebid/prebid-server/v3/currency"
+	"github.com/prebid/prebid-server/v3/metrics"
+	"github.com/prebid/prebid-server/v3/openrtb_ext"
 )
 
 // Bidder describes how to connect to external demand.
@@ -46,13 +45,13 @@ type Bidder interface {
 type TimeoutBidder interface {
 	Bidder
 
-	// MakeTimeoutNotice functions much the same as MakeRequests, except it is fed the bidder request that timed out,
+	// MakeTimeoutNotification functions much the same as MakeRequests, except it is fed the bidder request that timed out,
 	// and expects that only one notification "request" will be generated. A use case for multiple timeout notifications
 	// has not been anticipated.
 	//
 	// Do note that if MakeRequests returns multiple requests, and more than one of these times out, MakeTimeoutNotice will be called
 	// once for each timed out request.
-	MakeTimeoutNotification(req *RequestData) (*RequestData, []error)
+	MakeTimeoutNotification(req *RequestData) (*RequestData, error)
 }
 
 // BidderResponse wraps the server's response with the list of bids and the currency used by the bidder.
@@ -122,6 +121,7 @@ type RequestData struct {
 	Uri     string
 	Body    []byte
 	Headers http.Header
+	ImpIDs  []string
 }
 
 // ExtImpBidder can be used by Bidders to unmarshal any request.imp[i].ext.
@@ -146,9 +146,9 @@ func (r *RequestData) SetBasicAuth(username string, password string) {
 
 type ExtraRequestInfo struct {
 	PbsEntryPoint              metrics.RequestType
-	BidderRequestStartTime     time.Time
 	GlobalPrivacyControlHeader string
 	CurrencyConversions        currency.Conversions
+	PreferredMediaType         openrtb_ext.BidType
 }
 
 func NewExtraRequestInfo(c currency.Conversions) ExtraRequestInfo {

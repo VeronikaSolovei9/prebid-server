@@ -2,12 +2,12 @@ package hooks
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
-	"github.com/prebid/prebid-server/config"
-	"github.com/prebid/prebid-server/hooks/hookstage"
+	"github.com/prebid/prebid-server/v3/config"
+	"github.com/prebid/prebid-server/v3/hooks/hookstage"
+	"github.com/prebid/prebid-server/v3/util/jsonutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -227,7 +227,7 @@ func TestPlanForRawAuctionStage(t *testing.T) {
 	for name, test := range testCases {
 		t.Run(name, func(t *testing.T) {
 			account := new(config.Account)
-			if err := json.Unmarshal(test.giveAccountPlanData, &account.Hooks); err != nil {
+			if err := jsonutil.UnmarshalValid(test.giveAccountPlanData, &account.Hooks); err != nil {
 				t.Fatal(err)
 			}
 
@@ -333,7 +333,7 @@ func TestPlanForProcessedAuctionStage(t *testing.T) {
 	for name, test := range testCases {
 		t.Run(name, func(t *testing.T) {
 			account := new(config.Account)
-			if err := json.Unmarshal(test.giveAccountPlanData, &account.Hooks); err != nil {
+			if err := jsonutil.UnmarshalValid(test.giveAccountPlanData, &account.Hooks); err != nil {
 				t.Fatal(err)
 			}
 
@@ -439,7 +439,7 @@ func TestPlanForBidderRequestStage(t *testing.T) {
 	for name, test := range testCases {
 		t.Run(name, func(t *testing.T) {
 			account := new(config.Account)
-			if err := json.Unmarshal(test.giveAccountPlanData, &account.Hooks); err != nil {
+			if err := jsonutil.UnmarshalValid(test.giveAccountPlanData, &account.Hooks); err != nil {
 				t.Fatal(err)
 			}
 
@@ -545,7 +545,7 @@ func TestPlanForRawBidderResponseStage(t *testing.T) {
 	for name, test := range testCases {
 		t.Run(name, func(t *testing.T) {
 			account := new(config.Account)
-			if err := json.Unmarshal(test.giveAccountPlanData, &account.Hooks); err != nil {
+			if err := jsonutil.UnmarshalValid(test.giveAccountPlanData, &account.Hooks); err != nil {
 				t.Fatal(err)
 			}
 
@@ -651,7 +651,7 @@ func TestPlanForAllProcessedBidResponsesStage(t *testing.T) {
 	for name, test := range testCases {
 		t.Run(name, func(t *testing.T) {
 			account := new(config.Account)
-			if err := json.Unmarshal(test.giveAccountPlanData, &account.Hooks); err != nil {
+			if err := jsonutil.UnmarshalValid(test.giveAccountPlanData, &account.Hooks); err != nil {
 				t.Fatal(err)
 			}
 
@@ -757,13 +757,119 @@ func TestPlanForAuctionResponseStage(t *testing.T) {
 	for name, test := range testCases {
 		t.Run(name, func(t *testing.T) {
 			account := new(config.Account)
-			if err := json.Unmarshal(test.giveAccountPlanData, &account.Hooks); err != nil {
+			if err := jsonutil.UnmarshalValid(test.giveAccountPlanData, &account.Hooks); err != nil {
 				t.Fatal(err)
 			}
 
 			planBuilder, err := getPlanBuilder(test.givenHooks, test.givenHostPlanData, test.givenDefaultAccountPlanData)
 			if assert.NoError(t, err, "Failed to init hook execution plan builder") {
 				plan := planBuilder.PlanForAuctionResponseStage(test.givenEndpoint, account)
+				assert.Equal(t, test.expectedPlan, plan)
+			}
+		})
+	}
+}
+
+func TestPlanForExitpointStage(t *testing.T) {
+	const group1 string = `{"timeout":  5, "hook_sequence": [{"module_code": "foobar", "hook_impl_code": "foo"}]}`
+	const group2 string = `{"timeout": 10, "hook_sequence": [{"module_code": "foobar", "hook_impl_code": "bar"}, {"module_code": "ortb2blocking", "hook_impl_code": "block_request"}]}`
+	const group3 string = `{"timeout": 15, "hook_sequence": [{"module_code": "prebid", "hook_impl_code": "baz"}]}`
+	const hostPlanData string = `{"endpoints": {"/openrtb2/auction": {"stages": {"exitpoint": {"groups": [` + group1 + `]}}}}}`
+	const defaultAccountPlanData string = `{"endpoints": {"/openrtb2/auction": {"stages": {"exitpoint": {"groups": [` + group2 + `,` + group1 + `]}}}, "/openrtb2/amp": {"stages": {"entrypoint": {"groups": [` + group1 + `]}}}}}`
+	const accountPlanData string = `{"execution_plan": {"endpoints": {"/openrtb2/auction": {"stages": {"exitpoint": {"groups": [` + group3 + `]}}}}}}`
+
+	hooks := map[string]interface{}{
+		"foobar":        fakeExitpointHook{},
+		"ortb2blocking": fakeExitpointHook{},
+		"prebid":        fakeExitpointHook{},
+	}
+
+	testCases := map[string]struct {
+		givenEndpoint               string
+		givenHostPlanData           []byte
+		givenDefaultAccountPlanData []byte
+		giveAccountPlanData         []byte
+		givenHooks                  map[string]interface{}
+		expectedPlan                Plan[hookstage.Exitpoint]
+	}{
+		"Account-specific execution plan rewrites default-account execution plan": {
+			givenEndpoint:               "/openrtb2/auction",
+			givenHostPlanData:           []byte(hostPlanData),
+			givenDefaultAccountPlanData: []byte(defaultAccountPlanData),
+			giveAccountPlanData:         []byte(accountPlanData),
+			givenHooks:                  hooks,
+			expectedPlan: Plan[hookstage.Exitpoint]{
+				// first group from host-level plan
+				Group[hookstage.Exitpoint]{
+					Timeout: 5 * time.Millisecond,
+					Hooks: []HookWrapper[hookstage.Exitpoint]{
+						{Module: "foobar", Code: "foo", Hook: fakeExitpointHook{}},
+					},
+				},
+				// then come groups from account-level plan (default-account-level plan ignored)
+				Group[hookstage.Exitpoint]{
+					Timeout: 15 * time.Millisecond,
+					Hooks: []HookWrapper[hookstage.Exitpoint]{
+						{Module: "prebid", Code: "baz", Hook: fakeExitpointHook{}},
+					},
+				},
+			},
+		},
+		"Works with only account-specific plan": {
+			givenEndpoint:               "/openrtb2/auction",
+			givenHostPlanData:           []byte(`{}`),
+			givenDefaultAccountPlanData: []byte(`{}`),
+			giveAccountPlanData:         []byte(accountPlanData),
+			givenHooks:                  hooks,
+			expectedPlan: Plan[hookstage.Exitpoint]{
+				Group[hookstage.Exitpoint]{
+					Timeout: 15 * time.Millisecond,
+					Hooks: []HookWrapper[hookstage.Exitpoint]{
+						{Module: "prebid", Code: "baz", Hook: fakeExitpointHook{}},
+					},
+				},
+			},
+		},
+		"Works with empty account-specific execution plan": {
+			givenEndpoint:               "/openrtb2/auction",
+			givenHostPlanData:           []byte(hostPlanData),
+			givenDefaultAccountPlanData: []byte(defaultAccountPlanData),
+			giveAccountPlanData:         []byte(`{}`),
+			givenHooks:                  hooks,
+			expectedPlan: Plan[hookstage.Exitpoint]{
+				Group[hookstage.Exitpoint]{
+					Timeout: 5 * time.Millisecond,
+					Hooks: []HookWrapper[hookstage.Exitpoint]{
+						{Module: "foobar", Code: "foo", Hook: fakeExitpointHook{}},
+					},
+				},
+				Group[hookstage.Exitpoint]{
+					Timeout: 10 * time.Millisecond,
+					Hooks: []HookWrapper[hookstage.Exitpoint]{
+						{Module: "foobar", Code: "bar", Hook: fakeExitpointHook{}},
+						{Module: "ortb2blocking", Code: "block_request", Hook: fakeExitpointHook{}},
+					},
+				},
+				Group[hookstage.Exitpoint]{
+					Timeout: 5 * time.Millisecond,
+					Hooks: []HookWrapper[hookstage.Exitpoint]{
+						{Module: "foobar", Code: "foo", Hook: fakeExitpointHook{}},
+					},
+				},
+			},
+		},
+	}
+
+	for name, test := range testCases {
+		t.Run(name, func(t *testing.T) {
+			account := new(config.Account)
+			if err := jsonutil.UnmarshalValid(test.giveAccountPlanData, &account.Hooks); err != nil {
+				t.Fatal(err)
+			}
+
+			planBuilder, err := getPlanBuilder(test.givenHooks, test.givenHostPlanData, test.givenDefaultAccountPlanData)
+			if assert.NoError(t, err, "Failed to init hook execution plan builder") {
+				plan := planBuilder.PlanForExitpointStage(test.givenEndpoint, account)
 				assert.Equal(t, test.expectedPlan, plan)
 			}
 		})
@@ -779,12 +885,12 @@ func getPlanBuilder(
 	var hostPlan config.HookExecutionPlan
 	var defaultAccountPlan config.HookExecutionPlan
 
-	err = json.Unmarshal(hostPlanData, &hostPlan)
+	err = jsonutil.UnmarshalValid(hostPlanData, &hostPlan)
 	if err != nil {
 		return nil, err
 	}
 
-	err = json.Unmarshal(accountPlanData, &defaultAccountPlan)
+	err = jsonutil.UnmarshalValid(accountPlanData, &defaultAccountPlan)
 	if err != nil {
 		return nil, err
 	}
@@ -869,4 +975,14 @@ func (f fakeAuctionResponseHook) HandleAuctionResponseHook(
 	_ hookstage.AuctionResponsePayload,
 ) (hookstage.HookResult[hookstage.AuctionResponsePayload], error) {
 	return hookstage.HookResult[hookstage.AuctionResponsePayload]{}, nil
+}
+
+type fakeExitpointHook struct{}
+
+func (f fakeExitpointHook) HandleExitpointHook(
+	_ context.Context,
+	_ hookstage.ModuleInvocationContext,
+	_ hookstage.ExitpointPayload,
+) (hookstage.HookResult[hookstage.ExitpointPayload], error) {
+	return hookstage.HookResult[hookstage.ExitpointPayload]{}, nil
 }

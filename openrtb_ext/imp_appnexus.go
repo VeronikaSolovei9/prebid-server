@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/prebid/prebid-server/util/jsonutil"
+	"github.com/prebid/prebid-server/v3/util/jsonutil"
 )
 
 // ExtImpAppnexus defines the contract for bidrequest.imp[i].ext.prebid.bidder.appnexus
@@ -15,7 +15,7 @@ type ExtImpAppnexus struct {
 	LegacyTrafficSourceCode  string                 `json:"trafficSourceCode"`
 	PlacementId              jsonutil.StringInt     `json:"placement_id"`
 	InvCode                  string                 `json:"inv_code"`
-	Member                   string                 `json:"member"`
+	Member                   jsonutil.IntString     `json:"member"`
 	Keywords                 ExtImpAppnexusKeywords `json:"keywords"`
 	TrafficSourceCode        string                 `json:"traffic_source_code"`
 	Reserve                  float64                `json:"reserve"`
@@ -45,7 +45,7 @@ func (ks *ExtImpAppnexusKeywords) UnmarshalJSON(b []byte) error {
 	switch b[0] {
 	case '{':
 		var results map[string][]string
-		if err := json.Unmarshal(b, &results); err != nil {
+		if err := jsonutil.UnmarshalValid(b, &results); err != nil {
 			return err
 		}
 
@@ -64,7 +64,7 @@ func (ks *ExtImpAppnexusKeywords) UnmarshalJSON(b []byte) error {
 		}
 	case '[':
 		var results []extImpAppnexusKeyVal
-		if err := json.Unmarshal(b, &results); err != nil {
+		if err := jsonutil.UnmarshalValid(b, &results); err != nil {
 			return err
 		}
 		var kvs strings.Builder
@@ -82,7 +82,7 @@ func (ks *ExtImpAppnexusKeywords) UnmarshalJSON(b []byte) error {
 		}
 	case '"':
 		var keywords string
-		if err := json.Unmarshal(b, &keywords); err != nil {
+		if err := jsonutil.UnmarshalValid(b, &keywords); err != nil {
 			return err
 		}
 		*ks = ExtImpAppnexusKeywords(keywords)
